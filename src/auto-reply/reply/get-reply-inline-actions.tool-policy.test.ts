@@ -43,7 +43,7 @@ const createTypingController = (): TypingController => ({
   cleanup: vi.fn(),
 });
 
-const skillCommands: SkillCommandSpec[] = [
+const defaultSkillCommands: SkillCommandSpec[] = [
   {
     name: "danger-skill",
     skillName: "danger-skill",
@@ -53,12 +53,26 @@ const skillCommands: SkillCommandSpec[] = [
       toolName: "gateway",
     },
   },
+  {
+    name: "read-skill",
+    skillName: "read-skill",
+    description: "Allowed direct tool dispatch",
+    dispatch: {
+      kind: "tool",
+      toolName: "read",
+    },
+  },
 ];
 
-function createInput(): HandleInlineActionsInput {
+function createInput(overrides?: {
+  body?: string;
+  senderIsOwner?: boolean;
+  skillCommands?: SkillCommandSpec[];
+}): HandleInlineActionsInput {
+  const body = overrides?.body ?? "/danger-skill test";
   const ctx = buildTestCtx({
-    Body: "/danger-skill test",
-    CommandBody: "/danger-skill test",
+    Body: body,
+    CommandBody: body,
     Provider: "whatsapp",
     Surface: "whatsapp",
     From: "whatsapp:+123",
@@ -85,17 +99,17 @@ function createInput(): HandleInlineActionsInput {
       channel: "whatsapp",
       channelId: "whatsapp",
       ownerList: [],
-      senderIsOwner: true,
+      senderIsOwner: overrides?.senderIsOwner ?? true,
       isAuthorizedSender: true,
       senderId: "owner-1",
       abortKey: "whatsapp:+123",
-      rawBodyNormalized: "/danger-skill test",
-      commandBodyNormalized: "/danger-skill test",
+      rawBodyNormalized: body,
+      commandBodyNormalized: body,
       from: "whatsapp:+123",
       to: "whatsapp:+123",
     },
-    directives: clearInlineDirectives("/danger-skill test"),
-    cleanedBody: "/danger-skill test",
+    directives: clearInlineDirectives(body),
+    cleanedBody: body,
     elevatedEnabled: false,
     elevatedAllowed: false,
     elevatedFailures: [],
@@ -110,7 +124,7 @@ function createInput(): HandleInlineActionsInput {
     contextTokens: 0,
     abortedLastRun: false,
     sessionScope: "per-sender",
-    skillCommands,
+    skillCommands: overrides?.skillCommands ?? defaultSkillCommands,
   };
 }
 
@@ -123,6 +137,26 @@ describe("handleInlineActions skill tool dispatch", () => {
 
   it("applies the tool policy pipeline before direct /skill tool execution", async () => {
     const result = await handleInlineActions(createInput());
+
+    expect(result).toEqual({
+      kind: "reply",
+      reply: { text: "❌ Tool not available: gateway" },
+    });
+    expect(gatewayExecuteMock).not.toHaveBeenCalled();
+  });
+
+  it("executes an allowed tool through direct /skill dispatch", async () => {
+    const result = await handleInlineActions(createInput({ body: "/read-skill test" }));
+
+    expect(result).toEqual({
+      kind: "reply",
+      reply: { text: "READ" },
+    });
+    expect(readExecuteMock).toHaveBeenCalled();
+  });
+
+  it("keeps owner-only tools blocked for non-owners before policy resolution", async () => {
+    const result = await handleInlineActions(createInput({ senderIsOwner: false }));
 
     expect(result).toEqual({
       kind: "reply",

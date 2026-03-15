@@ -127,7 +127,7 @@ function resolveSkillDispatchTools(params: {
   });
   const toolsByAuthorization = applyOwnerOnlyToolPolicy(tools, params.senderIsOwner);
   const {
-    agentId,
+    agentId: resolvedAgentId,
     globalPolicy,
     globalProviderPolicy,
     agentPolicy,
@@ -194,7 +194,7 @@ function resolveSkillDispatchTools(params: {
         agentPolicy,
         agentProviderPolicy,
         groupPolicy,
-        agentId,
+        agentId: resolvedAgentId,
       }),
       { policy: sandboxPolicy, label: "sandbox tools.allow" },
       { policy: subagentPolicy, label: "subagent tools.allow" },

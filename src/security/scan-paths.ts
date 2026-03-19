@@ -1,11 +1,8 @@
 import fs from "node:fs";
-import path from "node:path";
+import { isPathInside as isBoundaryPathInside } from "../infra/path-guards.js";
 
 export function isPathInside(basePath: string, candidatePath: string): boolean {
-  const base = path.resolve(basePath);
-  const candidate = path.resolve(candidatePath);
-  const rel = path.relative(base, candidate);
-  return rel === "" || (!rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel));
+  return isBoundaryPathInside(basePath, candidatePath);
 }
 
 function safeRealpathSync(filePath: string): string | null {

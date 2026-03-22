@@ -269,9 +269,12 @@ For optional setup surfaces that should only appear in certain contexts, use
 import { createOptionalChannelSetupSurface } from "openclaw/plugin-sdk/channel-setup";
 
 const setupSurface = createOptionalChannelSetupSurface({
-  channelId: "my-channel",
-  // ... setup configuration
+  channel: "my-channel",
+  label: "My Channel",
+  npmSpec: "@myorg/openclaw-my-channel",
+  docsPath: "/channels/my-channel",
 });
+// Returns { setupAdapter, setupWizard }
 ```
 
 ## Publishing and installing

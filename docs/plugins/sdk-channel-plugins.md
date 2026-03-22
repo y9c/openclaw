@@ -100,6 +100,7 @@ dispatch.
       createChannelPluginBase,
     } from "openclaw/plugin-sdk/core";
     import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+    import { acmeChatApi } from "./client.js"; // your platform API client
 
     type ResolvedAccount = {
       accountId: string | null;
@@ -251,20 +252,22 @@ dispatch.
 
   <Step title="Handle inbound messages">
     Your plugin needs to receive messages from the platform and forward them to
-    OpenClaw. The typical pattern is a webhook or polling loop:
+    OpenClaw. The typical pattern is a webhook that verifies the request and
+    dispatches it through your channel's inbound handler:
 
     ```typescript
     registerFull(api) {
       api.registerHttpRoute({
         path: "/acme-chat/webhook",
-        auth: "plugin",
+        auth: "plugin", // plugin-managed auth (verify signatures yourself)
         handler: async (req, res) => {
           const event = parseWebhookPayload(req);
-          await api.runtime.channel.handleInboundMessage({
-            channel: "acme-chat",
-            from: event.senderId,
-            text: event.text,
-          });
+
+          // Your inbound handler dispatches the message to OpenClaw.
+          // The exact wiring depends on your platform SDK —
+          // see a real example in extensions/msteams or extensions/googlechat.
+          await handleAcmeChatInbound(api, event);
+
           res.statusCode = 200;
           res.end("ok");
           return true;
@@ -272,6 +275,12 @@ dispatch.
       });
     }
     ```
+
+    <Note>
+      Inbound message handling is channel-specific. Each channel plugin owns
+      its own inbound pipeline. Look at bundled channel plugins
+      (e.g. `extensions/msteams`, `extensions/googlechat`) for real patterns.
+    </Note>
 
   </Step>
 

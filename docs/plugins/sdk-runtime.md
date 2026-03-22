@@ -332,7 +332,7 @@ Beyond `api.runtime`, the API object also provides:
 | `api.config`             | `OpenClawConfig`          | Current config snapshot                                   |
 | `api.pluginConfig`       | `Record<string, unknown>` | Plugin-specific config from `plugins.entries.<id>.config` |
 | `api.logger`             | `PluginLogger`            | Scoped logger (`debug`, `info`, `warn`, `error`)          |
-| `api.registrationMode`   | `"full" \| "setup"`       | How the plugin was loaded                                 |
+| `api.registrationMode`   | `PluginRegistrationMode`  | `"full"`, `"setup-only"`, or `"setup-runtime"`            |
 | `api.resolvePath(input)` | `(string) => string`      | Resolve a path relative to the plugin root                |
 
 ## Related

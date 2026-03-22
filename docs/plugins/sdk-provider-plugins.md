@@ -290,10 +290,12 @@ API key auth, and dynamic model resolution.
   <Step title="Test">
     ```typescript src/provider.test.ts
     import { describe, it, expect } from "vitest";
+    // Export your provider config object from index.ts or a dedicated file
+    import { acmeProvider } from "./provider.js";
 
     describe("acme-ai provider", () => {
       it("resolves dynamic models", () => {
-        const model = provider.resolveDynamicModel({
+        const model = acmeProvider.resolveDynamicModel!({
           modelId: "acme-beta-v3",
         } as any);
         expect(model.id).toBe("acme-beta-v3");
@@ -301,14 +303,14 @@ API key auth, and dynamic model resolution.
       });
 
       it("returns catalog when key is available", async () => {
-        const result = await provider.catalog.run({
+        const result = await acmeProvider.catalog!.run({
           resolveProviderApiKey: () => ({ apiKey: "test-key" }),
         } as any);
         expect(result?.provider?.models).toHaveLength(2);
       });
 
       it("returns null catalog when no key", async () => {
-        const result = await provider.catalog.run({
+        const result = await acmeProvider.catalog!.run({
           resolveProviderApiKey: () => ({ apiKey: undefined }),
         } as any);
         expect(result).toBeNull();

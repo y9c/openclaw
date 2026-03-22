@@ -119,10 +119,11 @@ unconfigured, or when deferred loading is enabled. See
 
 `api.registrationMode` tells your plugin how it was loaded:
 
-| Mode      | When                   | What to register          |
-| --------- | ---------------------- | ------------------------- |
-| `"full"`  | Normal gateway startup | Everything                |
-| `"setup"` | Setup/onboarding flows | Channel registration only |
+| Mode              | When                              | What to register              |
+| ----------------- | --------------------------------- | ----------------------------- |
+| `"full"`          | Normal gateway startup            | Everything                    |
+| `"setup-only"`    | Disabled/unconfigured channel     | Channel registration only     |
+| `"setup-runtime"` | Setup flow with runtime available | Channel + lightweight runtime |
 
 `defineChannelPluginEntry` handles this split automatically. If you use
 `definePluginEntry` directly for a channel, check mode yourself:

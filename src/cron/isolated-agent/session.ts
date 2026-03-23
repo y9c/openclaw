@@ -103,6 +103,8 @@ export function resolveCronSession(params: {
         // Preserve session label and display name for session listings
         label: entry?.label,
         displayName: entry?.displayName,
+        // Preserve system prompt report for bootstrap warning deduplication
+        systemPromptReport: entry?.systemPromptReport,
       }
     : {
         // Non-isolated: preserve everything, clear routing only for new sessions

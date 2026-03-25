@@ -5,6 +5,7 @@ import type { loadConfig } from "../config/config.js";
 import { resolveGatewayStartupPluginIds } from "../plugins/channel-plugin-ids.js";
 import { normalizePluginsConfig } from "../plugins/config-state.js";
 import { loadOpenClawPlugins } from "../plugins/loader.js";
+import type { PluginRegistry } from "../plugins/registry.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { setGatewaySubagentRuntime } from "../plugins/runtime/index.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
@@ -397,6 +398,7 @@ export function loadGatewayPlugins(params: {
   coreGatewayHandlers: Record<string, GatewayRequestHandler>;
   baseMethods: string[];
   preferSetupRuntimeForChannelPlugins?: boolean;
+  onPluginRegistryLoaded?: (pluginRegistry: PluginRegistry) => void;
   logDiagnostics?: boolean;
 }) {
   setPluginSubagentOverridePolicies(params.cfg);
@@ -427,6 +429,7 @@ export function loadGatewayPlugins(params: {
     },
     preferSetupRuntimeForChannelPlugins: params.preferSetupRuntimeForChannelPlugins,
   });
+  params.onPluginRegistryLoaded?.(pluginRegistry);
   primeConfiguredBindingRegistry({ cfg: params.cfg });
   const pluginMethods = Object.keys(pluginRegistry.gatewayHandlers);
   const gatewayMethods = Array.from(new Set([...params.baseMethods, ...pluginMethods]));

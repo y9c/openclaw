@@ -541,6 +541,39 @@ describe("loadGatewayPlugins", () => {
     expect(primeConfiguredBindingRegistry).toHaveBeenCalledWith({ cfg });
   });
 
+  test("runs onPluginRegistryLoaded before priming configured bindings", async () => {
+    const { loadGatewayPlugins } = serverPluginsModule;
+    const pluginRegistry = createRegistry([]);
+    loadOpenClawPlugins.mockReturnValue(pluginRegistry);
+
+    const log = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    };
+    const calls: string[] = [];
+
+    primeConfiguredBindingRegistry.mockImplementation(() => {
+      calls.push("prime");
+      return { bindingCount: 0, channelCount: 0 };
+    });
+
+    loadGatewayPlugins({
+      cfg: {},
+      workspaceDir: "/tmp",
+      log,
+      coreGatewayHandlers: {},
+      baseMethods: [],
+      onPluginRegistryLoaded: (loadedRegistry) => {
+        expect(loadedRegistry).toBe(pluginRegistry);
+        calls.push("hook");
+      },
+    });
+
+    expect(calls).toEqual(["hook", "prime"]);
+  });
+
   test("can suppress duplicate diagnostics when reloading full runtime plugins", async () => {
     const { loadGatewayPlugins } = serverPluginsModule;
     const diagnostics: PluginDiagnostic[] = [

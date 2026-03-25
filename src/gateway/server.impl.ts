@@ -1250,12 +1250,9 @@ export async function startGatewayServer(
           log,
           coreGatewayHandlers,
           baseMethods,
+          onPluginRegistryLoaded: pinActivePluginChannelRegistry,
           logDiagnostics: false,
         }));
-        // Re-pin: the deferred reload replaces setup-entry channel objects with
-        // full runtime implementations. Update the pinned channel registry so
-        // getChannelPlugin() resolves against the complete set.
-        pinActivePluginChannelRegistry(pluginRegistry);
       }
       ({ browserControl, pluginServices } = await startGatewaySidecars({
         cfg: cfgAtStart,

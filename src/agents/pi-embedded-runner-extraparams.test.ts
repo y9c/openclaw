@@ -76,7 +76,17 @@ import {
   resolveExtraParams,
   resolvePreparedExtraParams,
 } from "./pi-embedded-runner.js";
+import {
+  createBedrockNoCacheWrapper,
+  isAnthropicBedrockModel,
+} from "./pi-embedded-runner/bedrock-stream-wrappers.js";
+import { createGoogleThinkingPayloadWrapper } from "./pi-embedded-runner/google-stream-wrappers.js";
 import { log } from "./pi-embedded-runner/logger.js";
+import { createMinimaxFastModeWrapper } from "./pi-embedded-runner/minimax-stream-wrappers.js";
+import {
+  createMoonshotThinkingWrapper,
+  resolveMoonshotThinkingType,
+} from "./pi-embedded-runner/moonshot-stream-wrappers.js";
 import {
   createCodexNativeWebSearchWrapper,
   createOpenAIAttributionHeadersWrapper,
@@ -149,6 +159,30 @@ beforeEach(() => {
       }
       if (params.provider === "azure-openai" || params.provider === "azure-openai-responses") {
         return createTestOpenAIProviderWrapper(params, false);
+      }
+      if (params.provider === "amazon-bedrock") {
+        return isAnthropicBedrockModel(params.context.modelId)
+          ? params.context.streamFn
+          : createBedrockNoCacheWrapper(params.context.streamFn);
+      }
+      if (params.provider === "moonshot") {
+        const thinkingType = resolveMoonshotThinkingType({
+          configuredThinking: params.context.extraParams?.thinking,
+          thinkingLevel: params.context.thinkingLevel,
+        });
+        return createMoonshotThinkingWrapper(params.context.streamFn, thinkingType);
+      }
+      if (params.provider === "google") {
+        return createGoogleThinkingPayloadWrapper(
+          params.context.streamFn,
+          params.context.thinkingLevel,
+        );
+      }
+      if (params.provider === "minimax" || params.provider === "minimax-portal") {
+        return createMinimaxFastModeWrapper(
+          params.context.streamFn,
+          params.context.extraParams?.fastMode === true,
+        );
       }
       if (params.provider === "ollama") {
         return createConfiguredOllamaCompatNumCtxWrapper(params.context);

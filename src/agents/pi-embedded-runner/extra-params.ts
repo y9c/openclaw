@@ -11,15 +11,10 @@ import {
 import type { ProviderRuntimeModel } from "../../plugins/types.js";
 import { resolveCacheRetention } from "./anthropic-cache-retention.js";
 import { createAnthropicToolPayloadCompatibilityWrapper } from "./anthropic-family-tool-payload-compat.js";
-import { createBedrockNoCacheWrapper, isAnthropicBedrockModel } from "./bedrock-stream-wrappers.js";
 import { createGoogleThinkingPayloadWrapper } from "./google-stream-wrappers.js";
 import { log } from "./logger.js";
-import { createMinimaxFastModeWrapper } from "./minimax-stream-wrappers.js";
 import {
-  createMoonshotThinkingWrapper,
-  resolveMoonshotThinkingType,
   createSiliconFlowThinkingWrapper,
-  shouldApplyMoonshotPayloadCompat,
   shouldApplySiliconFlowThinkingOffCompat,
 } from "./moonshot-stream-wrappers.js";
 import { createOpenAIResponsesContextManagementWrapper } from "./openai-stream-wrappers.js";
@@ -322,43 +317,10 @@ function applyPrePluginStreamWrappers(ctx: ApplyExtraParamsContext): void {
   });
 }
 
-function applyPostPluginStreamWrappers(
-  ctx: ApplyExtraParamsContext & { providerWrapperHandled: boolean },
-): void {
-  if (
-    !ctx.providerWrapperHandled &&
-    shouldApplyMoonshotPayloadCompat({ provider: ctx.provider, modelId: ctx.modelId })
-  ) {
-    // Preserve the legacy Moonshot compatibility path when no plugin wrapper
-    // actually handled the stream function. This mainly covers tests and
-    // disabled plugins for the native Moonshot provider.
-    const thinkingType = resolveMoonshotThinkingType({
-      configuredThinking: ctx.effectiveExtraParams?.thinking,
-      thinkingLevel: ctx.thinkingLevel,
-    });
-    ctx.agent.streamFn = createMoonshotThinkingWrapper(ctx.agent.streamFn, thinkingType);
-  }
-
-  if (ctx.provider === "amazon-bedrock" && !isAnthropicBedrockModel(ctx.modelId)) {
-    log.debug(
-      `disabling prompt caching for non-Anthropic Bedrock model ${ctx.provider}/${ctx.modelId}`,
-    );
-    ctx.agent.streamFn = createBedrockNoCacheWrapper(ctx.agent.streamFn);
-  }
-
+function applyPostPluginStreamWrappers(ctx: ApplyExtraParamsContext): void {
   // Guard Google payloads against invalid negative thinking budgets emitted by
   // upstream model-ID heuristics for Gemini 3.1 variants.
   ctx.agent.streamFn = createGoogleThinkingPayloadWrapper(ctx.agent.streamFn, ctx.thinkingLevel);
-
-  if (typeof ctx.effectiveExtraParams?.fastMode === "boolean") {
-    log.debug(
-      `applying MiniMax fast mode=${ctx.effectiveExtraParams.fastMode} for ${ctx.provider}/${ctx.modelId}`,
-    );
-    ctx.agent.streamFn = createMinimaxFastModeWrapper(
-      ctx.agent.streamFn,
-      ctx.effectiveExtraParams.fastMode,
-    );
-  }
 
   // Work around upstream pi-ai hardcoding `store: false` for Responses API.
   // Force `store=true` for direct OpenAI Responses models and auto-enable
@@ -458,12 +420,7 @@ export function applyExtraParamsToAgent(
     },
   });
   agent.streamFn = pluginWrappedStreamFn ?? providerStreamBase;
-  const providerWrapperHandled =
-    pluginWrappedStreamFn !== undefined && pluginWrappedStreamFn !== providerStreamBase;
-  applyPostPluginStreamWrappers({
-    ...wrapperContext,
-    providerWrapperHandled,
-  });
+  applyPostPluginStreamWrappers(wrapperContext);
 
   return { effectiveExtraParams };
 }

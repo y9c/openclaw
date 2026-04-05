@@ -394,13 +394,13 @@ describe("convertTools", () => {
 
   it("handles tools without description", () => {
     const tools = [{ name: "ping", description: "", parameters: {} }];
-    const result = convertTools(tools as Parameters<typeof convertTools>[0]);
+    const result = convertTools(tools as unknown as Parameters<typeof convertTools>[0]);
     expect(result[0]?.name).toBe("ping");
   });
 
   it("normalizes truly empty parameter schemas for parameter-free tools", () => {
     const tools = [{ name: "ping", description: "No params", parameters: {} }];
-    const result = convertTools(tools as Parameters<typeof convertTools>[0]);
+    const result = convertTools(tools as unknown as Parameters<typeof convertTools>[0]);
     expect(result[0]?.parameters).toEqual({
       type: "object",
       properties: {},

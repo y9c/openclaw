@@ -137,7 +137,7 @@ export async function sendProactive(
       }
     }
 
-    let result: { id: string; timestamp: number | string };
+    let result: { id: string; timestamp: number | string } | undefined;
 
     if (type === "c2c") {
       result = await sendProactiveC2CMessage(account.appId, accessToken, to, text);
@@ -147,6 +147,13 @@ export async function sendProactive(
       return {
         success: false,
         error: "Channel proactive messages are not supported. Please use group or c2c.",
+      };
+    }
+
+    if (!result) {
+      return {
+        success: false,
+        error: "Unknown message type.",
       };
     }
 

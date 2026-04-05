@@ -192,7 +192,7 @@ export async function handleStructuredPayload(
     return true;
   }
 
-  log?.error(`[qqbot:${account.accountId}] Unknown payload type: ${parsedPayload.type}`);
+  log?.error(`[qqbot:${account.accountId}] Unknown structured payload kind`);
   return true;
 }
 

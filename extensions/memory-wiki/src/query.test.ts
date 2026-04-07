@@ -153,6 +153,49 @@ describe("searchMemoryWiki", () => {
     });
   });
 
+  it("finds imported markdown-vault pages by imported aliases and tags", async () => {
+    const { rootDir, config } = await createQueryVault({
+      initialize: true,
+    });
+    await fs.writeFile(
+      path.join(rootDir, "sources", "alpha-import.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.import.alpha",
+          title: "Alpha Project Note",
+          sourceType: "markdown-vault",
+          importedTags: ["project-alpha"],
+          importedAliases: ["Alpha Canon"],
+          importedLinkTargets: ["beta-project"],
+        },
+        body: `# Alpha Project Note
+
+## Imported Source
+- Imported tags: \`project-alpha\`
+- Imported aliases: \`Alpha Canon\`
+- Imported links: \`beta-project\`
+
+## Imported Markdown
+Alpha project planning notes.
+`,
+      }),
+      "utf8",
+    );
+
+    const aliasResults = await searchMemoryWiki({ config, query: "alpha canon" });
+    expect(aliasResults[0]).toMatchObject({
+      corpus: "wiki",
+      path: "sources/alpha-import.md",
+    });
+
+    const tagResults = await searchMemoryWiki({ config, query: "project-alpha" });
+    expect(tagResults[0]).toMatchObject({
+      corpus: "wiki",
+      path: "sources/alpha-import.md",
+    });
+  });
+
   it("ranks fresh supported claims ahead of stale contested claims", async () => {
     const { rootDir, config } = await createQueryVault({
       initialize: true,

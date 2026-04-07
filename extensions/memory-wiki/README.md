@@ -131,7 +131,7 @@ openclaw wiki obsidian command workspace:quick-switcher
 openclaw wiki obsidian daily
 ```
 
-`wiki import` is the recommended path for local files, folders, and markdown vaults like Obsidian or Logseq. It auto-detects the best import profile when possible, writes imported artifacts as source pages, and records progress in the shared task ledger for larger imports. Markdown vault imports also preserve readable note bodies plus imported tags, aliases, and link hints instead of flattening every note into a fenced blob. `wiki ingest` still exists as a compatibility shortcut for single-file imports.
+`wiki import` is the recommended path for local files, folders, and markdown vaults like Obsidian or Logseq. It auto-detects the best import profile when possible, writes imported artifacts as source pages, and records progress in the shared task ledger for larger imports. Markdown vault imports also preserve readable note bodies plus imported tags, aliases, and link hints instead of flattening every note into a fenced blob, and compile/search now use that imported metadata to rank the right pages faster.
 
 ## Agent tools
 

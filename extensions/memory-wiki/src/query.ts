@@ -26,6 +26,9 @@ type QueryDigestPage = {
   sourceIds: string[];
   questions: string[];
   contradictions: string[];
+  importedTags?: string[];
+  importedAliases?: string[];
+  importedLinkTargets?: string[];
 };
 
 type QueryDigestClaim = {
@@ -198,6 +201,9 @@ function buildPageSearchText(page: QueryableWikiPage): string {
     page.sourceIds.join(" "),
     page.questions.join(" "),
     page.contradictions.join(" "),
+    page.importedTags.join(" "),
+    page.importedAliases.join(" "),
+    page.importedLinkTargets.join(" "),
     page.claims.map((claim) => claim.text).join(" "),
     page.claims.map((claim) => claim.id ?? "").join(" "),
   ]
@@ -213,6 +219,9 @@ function buildDigestPageSearchText(page: QueryDigestPage, claims: QueryDigestCla
     page.sourceIds.join(" "),
     page.questions.join(" "),
     page.contradictions.join(" "),
+    (page.importedTags ?? []).join(" "),
+    (page.importedAliases ?? []).join(" "),
+    (page.importedLinkTargets ?? []).join(" "),
     claims.map((claim) => claim.text).join(" "),
     claims.map((claim) => claim.id ?? "").join(" "),
   ]
@@ -403,6 +412,15 @@ function scorePage(page: QueryableWikiPage, query: string): number {
   }
   if (page.sourceIds.some((sourceId) => sourceId.toLowerCase().includes(queryLower))) {
     score += 12;
+  }
+  if (page.importedTags.some((tag) => tag.toLowerCase().includes(queryLower))) {
+    score += 10;
+  }
+  if (page.importedAliases.some((alias) => alias.toLowerCase().includes(queryLower))) {
+    score += 16;
+  }
+  if (page.importedLinkTargets.some((target) => target.toLowerCase().includes(queryLower))) {
+    score += 8;
   }
   const matchingClaims = getMatchingClaims(page, queryLower);
   if (matchingClaims.length > 0) {

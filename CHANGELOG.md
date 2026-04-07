@@ -25,6 +25,7 @@ Docs: https://docs.openclaw.ai
 - Memory/wiki: add an opt-in `context.includeCompiledDigestPrompt` flag so memory prompt supplements can append a compact compiled wiki snapshot for legacy prompt assembly and context engines that explicitly consume memory prompt sections. Thanks @vincentkoc.
 - Memory/wiki: add task-backed `wiki import` with automatic local-file and markdown-vault detection so existing note stores can be backfilled into source pages with shared task progress instead of ad hoc one-off ingest flows. Thanks @vincentkoc.
 - Memory/wiki: keep imported Obsidian and Logseq notes readable by preserving markdown note bodies plus imported tags, aliases, and link hints instead of flattening every vault note into a fenced text blob. Thanks @vincentkoc.
+- Memory/wiki: use imported vault tags, aliases, and link hints in the compiled digest and wiki search ranking so imported Obsidian and Logseq notes are easier to recall by their original note metadata. Thanks @vincentkoc.
 - Plugin SDK/context engines: pass `availableTools` and `citationsMode` into `assemble()`, and expose `buildMemorySystemPromptAddition(...)` so non-legacy context engines can adopt the active memory prompt path without reimplementing it. Thanks @vincentkoc.
 
 ### Fixes

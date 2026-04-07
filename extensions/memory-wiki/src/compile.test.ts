@@ -85,6 +85,51 @@ describe("compileMemoryWikiVault", () => {
     ).resolves.toContain('"text":"Alpha is the canonical source page."');
   });
 
+  it("includes imported markdown-vault metadata in the agent digest", async () => {
+    const { rootDir, config } = await createVault({
+      rootDir: nextCaseRoot(),
+      initialize: true,
+    });
+
+    await fs.writeFile(
+      path.join(rootDir, "sources", "alpha-import.md"),
+      renderWikiMarkdown({
+        frontmatter: {
+          pageType: "source",
+          id: "source.import.alpha",
+          title: "Alpha Import",
+          sourceType: "markdown-vault",
+          importedTags: ["project-alpha"],
+          importedAliases: ["Alpha Canon"],
+          importedLinkTargets: ["beta-project"],
+        },
+        body: "# Alpha Import\n\nImported markdown body.\n",
+      }),
+      "utf8",
+    );
+
+    await compileMemoryWikiVault(config);
+
+    const agentDigest = JSON.parse(
+      await fs.readFile(path.join(rootDir, ".openclaw-wiki", "cache", "agent-digest.json"), "utf8"),
+    ) as {
+      pages: Array<{
+        path: string;
+        importedTags?: string[];
+        importedAliases?: string[];
+        importedLinkTargets?: string[];
+      }>;
+    };
+    expect(agentDigest.pages).toContainEqual(
+      expect.objectContaining({
+        path: "sources/alpha-import.md",
+        importedTags: ["project-alpha"],
+        importedAliases: ["Alpha Canon"],
+        importedLinkTargets: ["beta-project"],
+      }),
+    );
+  });
+
   it("renders obsidian-friendly links when configured", async () => {
     const { rootDir, config } = await createVault({
       rootDir: nextCaseRoot(),

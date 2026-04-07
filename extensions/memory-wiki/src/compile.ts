@@ -709,6 +709,9 @@ type AgentDigestPage = {
   sourceIds: string[];
   questions: string[];
   contradictions: string[];
+  importedTags?: string[];
+  importedAliases?: string[];
+  importedLinkTargets?: string[];
   confidence?: number;
   freshnessLevel: WikiFreshnessLevel;
   lastTouchedAt?: string;
@@ -844,6 +847,11 @@ function buildAgentDigest(params: {
         sourceIds: [...page.sourceIds],
         questions: [...page.questions],
         contradictions: [...page.contradictions],
+        ...(page.importedTags.length > 0 ? { importedTags: [...page.importedTags] } : {}),
+        ...(page.importedAliases.length > 0 ? { importedAliases: [...page.importedAliases] } : {}),
+        ...(page.importedLinkTargets.length > 0
+          ? { importedLinkTargets: [...page.importedLinkTargets] }
+          : {}),
         ...(typeof page.confidence === "number" ? { confidence: page.confidence } : {}),
         freshnessLevel: pageFreshness.level,
         ...(pageFreshness.lastTouchedAt ? { lastTouchedAt: pageFreshness.lastTouchedAt } : {}),

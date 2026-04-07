@@ -46,6 +46,9 @@ export type WikiPageSummary = {
   claims: WikiClaim[];
   contradictions: string[];
   questions: string[];
+  importedTags: string[];
+  importedAliases: string[];
+  importedLinkTargets: string[];
   confidence?: number;
   sourceType?: string;
   provenanceMode?: string;
@@ -261,6 +264,9 @@ export function toWikiPageSummary(params: {
     claims: normalizeWikiClaims(parsed.frontmatter.claims),
     contradictions: normalizeSingleOrTrimmedStringList(parsed.frontmatter.contradictions),
     questions: normalizeSingleOrTrimmedStringList(parsed.frontmatter.questions),
+    importedTags: normalizeSingleOrTrimmedStringList(parsed.frontmatter.importedTags),
+    importedAliases: normalizeSingleOrTrimmedStringList(parsed.frontmatter.importedAliases),
+    importedLinkTargets: normalizeSingleOrTrimmedStringList(parsed.frontmatter.importedLinkTargets),
     confidence:
       typeof parsed.frontmatter.confidence === "number" &&
       Number.isFinite(parsed.frontmatter.confidence)

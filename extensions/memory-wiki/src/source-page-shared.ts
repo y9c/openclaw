@@ -9,19 +9,29 @@ import {
 
 type ImportedSourceState = Parameters<typeof shouldSkipImportedSourceWrite>[0]["state"];
 
-export async function writeImportedSourcePage(params: {
-  vaultRoot: string;
-  syncKey: string;
-  sourcePath: string;
-  sourceUpdatedAtMs: number;
-  sourceSize: number;
-  renderFingerprint: string;
-  pagePath: string;
-  group: MemoryWikiImportedSourceGroup;
-  scopeKey?: string;
-  state: ImportedSourceState;
-  buildRendered: (raw: string, updatedAt: string) => string;
-}): Promise<{ pagePath: string; changed: boolean; created: boolean }> {
+export async function writeImportedSourcePage(
+  params: {
+    vaultRoot: string;
+    syncKey: string;
+    sourcePath: string;
+    sourceUpdatedAtMs: number;
+    sourceSize: number;
+    renderFingerprint: string;
+    pagePath: string;
+    group: MemoryWikiImportedSourceGroup;
+    scopeKey?: string;
+    state: ImportedSourceState;
+  } & (
+    | {
+        buildRendered: (raw: string, updatedAt: string) => string;
+        rendered?: never;
+      }
+    | {
+        rendered: string;
+        buildRendered?: never;
+      }
+  ),
+): Promise<{ pagePath: string; changed: boolean; created: boolean }> {
   const pageAbsPath = path.join(params.vaultRoot, params.pagePath);
   const created = !(await pathExists(pageAbsPath));
   const updatedAt = new Date(params.sourceUpdatedAtMs).toISOString();
@@ -39,8 +49,10 @@ export async function writeImportedSourcePage(params: {
     return { pagePath: params.pagePath, changed: false, created };
   }
 
-  const raw = await fs.readFile(params.sourcePath, "utf8");
-  const rendered = params.buildRendered(raw, updatedAt);
+  const rendered =
+    "rendered" in params
+      ? params.rendered
+      : params.buildRendered(await fs.readFile(params.sourcePath, "utf8"), updatedAt);
   const existing = await fs.readFile(pageAbsPath, "utf8").catch(() => "");
   if (existing !== rendered) {
     await fs.writeFile(pageAbsPath, rendered, "utf8");

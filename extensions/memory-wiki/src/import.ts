@@ -10,6 +10,7 @@ import {
 import { normalizeSingleOrTrimmedStringList } from "openclaw/plugin-sdk/text-runtime";
 import { compileMemoryWikiVault, type CompileMemoryWikiResult } from "./compile.js";
 import type { ResolvedMemoryWikiConfig } from "./config.js";
+import { parseChatGptExportFile, type ChatGptExportConversation } from "./import-chatgpt.js";
 import { detectChatGptExportFile } from "./import-profile-detect.js";
 import { buildImportReviewBody, type ImportReviewEntry } from "./import-review.js";
 import { appendMemoryWikiLog } from "./log.js";
@@ -105,6 +106,13 @@ export type WikiImportResult = {
 type WikiImportProfileResolution = {
   profileId: WikiImportProfileId;
   profileResolution: "automatic" | "explicit";
+};
+
+type ImportWriteResult = {
+  pagePath: string;
+  changed: boolean;
+  created: boolean;
+  reviewEntry: ImportReviewEntry;
 };
 
 function normalizeImportProfileId(value?: string): WikiImportProfileId | undefined {
@@ -330,9 +338,6 @@ async function resolveWikiImportProfile(params: {
   profileId?: WikiImportProfileId;
 }): Promise<WikiImportProfileResolution> {
   if (params.profileId) {
-    if (params.profileId === "chatgpt-export") {
-      throw new Error("`chatgpt-export` import is reserved but not implemented yet.");
-    }
     return {
       profileId: params.profileId,
       profileResolution: "explicit",
@@ -409,7 +414,7 @@ async function enumerateImportArtifacts(params: {
 
 function resolveImportScopeKey(params: {
   inputPath: string;
-  profileId: Exclude<WikiImportProfileId, "chatgpt-export">;
+  profileId: WikiImportProfileId;
 }): string {
   return `${params.profileId}:${path.resolve(params.inputPath)}`;
 }
@@ -473,12 +478,7 @@ async function writeImportArtifactPage(params: {
   state: Awaited<ReturnType<typeof readMemoryWikiSourceSyncState>>;
   scopeKey: string;
   titleOverride?: string;
-}): Promise<{
-  pagePath: string;
-  changed: boolean;
-  created: boolean;
-  reviewEntry: ImportReviewEntry;
-}> {
+}): Promise<ImportWriteResult> {
   const stats = await fs.stat(params.artifact.absolutePath);
   const raw = assertUtf8Text(
     await fs.readFile(params.artifact.absolutePath),
@@ -588,6 +588,118 @@ async function writeImportArtifactPage(params: {
   };
 }
 
+async function writeChatGptConversationPage(params: {
+  config: ResolvedMemoryWikiConfig;
+  exportPath: string;
+  conversation: ChatGptExportConversation;
+  state: Awaited<ReturnType<typeof readMemoryWikiSourceSyncState>>;
+  scopeKey: string;
+}): Promise<ImportWriteResult> {
+  const stats = await fs.stat(params.exportPath);
+  const exportHash = createHash("sha1").update(params.exportPath).digest("hex").slice(0, 8);
+  const conversationHash = createHash("sha1")
+    .update(params.conversation.conversationId)
+    .digest("hex")
+    .slice(0, 8);
+  const conversationSlug = slugifyWikiSegment(params.conversation.title);
+  const pageId = `source.import.chatgpt-export.${exportHash}.${conversationHash}`;
+  const pagePath = path
+    .join(
+      "sources",
+      `import-chatgpt-export-${exportHash}-${conversationSlug}-${conversationHash}.md`,
+    )
+    .replace(/\\/g, "/");
+  const renderFingerprint = createHash("sha1")
+    .update(
+      JSON.stringify({
+        profileId: "chatgpt-export",
+        exportPath: params.exportPath,
+        conversationId: params.conversation.conversationId,
+        title: params.conversation.title,
+        relativePath: params.conversation.relativePath,
+        transcriptBody: params.conversation.transcriptBody,
+        messageCount: params.conversation.messageCount,
+        participantRoles: params.conversation.participantRoles,
+        conversationCreatedAt: params.conversation.conversationCreatedAt,
+        conversationUpdatedAt: params.conversation.conversationUpdatedAt,
+      }),
+    )
+    .digest("hex");
+  const rendered = renderWikiMarkdown({
+    frontmatter: {
+      pageType: "source",
+      id: pageId,
+      title: params.conversation.title,
+      sourceType: "chatgpt-export",
+      sourcePath: params.exportPath,
+      importProfile: "chatgpt-export",
+      importRootPath: path.dirname(params.exportPath),
+      importRelativePath: params.conversation.relativePath,
+      importedTags: ["chatgpt-export"],
+      importedAliases: [params.conversation.conversationId],
+      status: "active",
+      updatedAt: new Date(stats.mtimeMs).toISOString(),
+    },
+    body: [
+      `# ${params.conversation.title}`,
+      "",
+      "## Imported Source",
+      "- Profile: `chatgpt-export`",
+      `- Export file: \`${params.exportPath}\``,
+      `- Relative path: \`${params.conversation.relativePath}\``,
+      `- Conversation id: \`${params.conversation.conversationId}\``,
+      ...(params.conversation.conversationCreatedAt
+        ? [`- Conversation created: ${params.conversation.conversationCreatedAt}`]
+        : []),
+      ...(params.conversation.conversationUpdatedAt
+        ? [`- Conversation updated: ${params.conversation.conversationUpdatedAt}`]
+        : []),
+      `- Messages: ${params.conversation.messageCount}`,
+      ...(params.conversation.participantRoles.length > 0
+        ? [
+            `- Participants: ${params.conversation.participantRoles
+              .map((role) => `\`${role}\``)
+              .join(", ")}`,
+          ]
+        : []),
+      "",
+      "## Conversation Transcript",
+      params.conversation.transcriptBody,
+      "",
+      "## Notes",
+      "<!-- openclaw:human:start -->",
+      "<!-- openclaw:human:end -->",
+      "",
+    ].join("\n"),
+  });
+  const writeResult = await writeImportedSourcePage({
+    vaultRoot: params.config.vault.path,
+    syncKey: `chatgpt-export:${params.exportPath}#${params.conversation.conversationId}`,
+    sourcePath: params.exportPath,
+    sourceUpdatedAtMs: stats.mtimeMs,
+    sourceSize: stats.size,
+    renderFingerprint,
+    pagePath,
+    group: "import",
+    scopeKey: params.scopeKey,
+    state: params.state,
+    rendered,
+  });
+  const bodyMetrics = buildImportBodyMetrics(params.conversation.transcriptBody);
+  return {
+    ...writeResult,
+    reviewEntry: {
+      title: params.conversation.title,
+      relativePath: params.conversation.relativePath,
+      pagePath,
+      importedAliases: [params.conversation.conversationId],
+      importedTags: ["chatgpt-export"],
+      bodyFingerprint: buildImportBodyFingerprint(params.conversation.transcriptBody),
+      ...bodyMetrics,
+    },
+  };
+}
+
 export async function importMemoryWikiInput(params: {
   config: ResolvedMemoryWikiConfig;
   inputPath: string;
@@ -632,48 +744,67 @@ export async function importMemoryWikiInput(params: {
       eventSummary: `Detected ${profile.profileId} import profile`,
     });
 
-    if (profile.profileId === "chatgpt-export") {
-      throw new Error("`chatgpt-export` import is reserved but not implemented yet.");
-    }
-
-    const artifacts = await enumerateImportArtifacts({
-      inputPath: normalizedInputPath,
-      profileId: profile.profileId,
-    });
-    if (artifacts.length === 0) {
-      throw new Error(
-        `No importable sources found for ${profile.profileId}: ${normalizedInputPath}`,
-      );
-    }
     const scopeKey = resolveImportScopeKey({
       inputPath: normalizedInputPath,
       profileId: profile.profileId,
     });
     const state = await readMemoryWikiSourceSyncState(params.config.vault.path);
     const activeKeys = new Set<string>();
-    const results: Array<{
-      pagePath: string;
-      changed: boolean;
-      created: boolean;
-      reviewEntry: ImportReviewEntry;
-    }> = [];
+    const results: ImportWriteResult[] = [];
+    let artifactCount = 0;
 
-    for (const [index, artifact] of artifacts.entries()) {
-      activeKeys.add(await resolveArtifactKey(artifact.absolutePath));
+    if (profile.profileId === "chatgpt-export") {
       recordPluginTaskProgress({
         handle: taskHandle,
-        progressSummary: `Importing ${index + 1}/${artifacts.length} sources`,
-        eventSummary: artifact.relativePath,
+        progressSummary: "Reading chatgpt-export conversations",
       });
-      results.push(
-        await writeImportArtifactPage({
-          config: params.config,
-          artifact,
-          state,
-          scopeKey,
-          titleOverride: params.title,
-        }),
-      );
+      const conversations = await parseChatGptExportFile(normalizedInputPath);
+      artifactCount = conversations.length;
+      for (const [index, conversation] of conversations.entries()) {
+        activeKeys.add(`chatgpt-export:${normalizedInputPath}#${conversation.conversationId}`);
+        recordPluginTaskProgress({
+          handle: taskHandle,
+          progressSummary: `Importing ${index + 1}/${conversations.length} conversations`,
+          eventSummary: conversation.title,
+        });
+        results.push(
+          await writeChatGptConversationPage({
+            config: params.config,
+            exportPath: normalizedInputPath,
+            conversation,
+            state,
+            scopeKey,
+          }),
+        );
+      }
+    } else {
+      const artifacts = await enumerateImportArtifacts({
+        inputPath: normalizedInputPath,
+        profileId: profile.profileId,
+      });
+      if (artifacts.length === 0) {
+        throw new Error(
+          `No importable sources found for ${profile.profileId}: ${normalizedInputPath}`,
+        );
+      }
+      artifactCount = artifacts.length;
+      for (const [index, artifact] of artifacts.entries()) {
+        activeKeys.add(await resolveArtifactKey(artifact.absolutePath));
+        recordPluginTaskProgress({
+          handle: taskHandle,
+          progressSummary: `Importing ${index + 1}/${artifacts.length} sources`,
+          eventSummary: artifact.relativePath,
+        });
+        results.push(
+          await writeImportArtifactPage({
+            config: params.config,
+            artifact,
+            state,
+            scopeKey,
+            titleOverride: params.title,
+          }),
+        );
+      }
     }
 
     const removedCount = await pruneImportedSourceEntries({
@@ -701,7 +832,7 @@ export async function importMemoryWikiInput(params: {
       inputPath: normalizedInputPath,
       profileId: profile.profileId,
       profileResolution: profile.profileResolution,
-      artifactCount: artifacts.length,
+      artifactCount,
       importedCount,
       updatedCount,
       skippedCount,
@@ -729,7 +860,7 @@ export async function importMemoryWikiInput(params: {
         inputPath: normalizedInputPath,
         profileId: profile.profileId,
         profileResolution: profile.profileResolution,
-        artifactCount: artifacts.length,
+        artifactCount,
         importedCount,
         updatedCount,
         skippedCount,
@@ -742,7 +873,7 @@ export async function importMemoryWikiInput(params: {
       inputPath: normalizedInputPath,
       profileId: profile.profileId,
       profileResolution: profile.profileResolution,
-      artifactCount: artifacts.length,
+      artifactCount,
       importedCount,
       updatedCount,
       skippedCount,
@@ -758,8 +889,8 @@ export async function importMemoryWikiInput(params: {
 
     completePluginTaskRun({
       handle: taskHandle,
-      progressSummary: `Imported ${artifacts.length} sources`,
-      terminalSummary: `Imported ${artifacts.length} sources via ${profile.profileId} (${importedCount} new, ${updatedCount} updated, ${skippedCount} unchanged, ${removedCount} removed).`,
+      progressSummary: `Imported ${artifactCount} sources`,
+      terminalSummary: `Imported ${artifactCount} sources via ${profile.profileId} (${importedCount} new, ${updatedCount} updated, ${skippedCount} unchanged, ${removedCount} removed).`,
     });
     return result;
   } catch (error) {

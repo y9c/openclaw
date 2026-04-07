@@ -117,23 +117,62 @@ alpha body with [[Beta Project|Beta]] and [Plan](projects/beta.md).
     );
   });
 
-  it("keeps chatgpt-export as an explicit placeholder", async () => {
-    const { config } = await createVault({ initialize: true });
+  it("imports chatgpt-export files explicitly as conversation sources", async () => {
+    const { rootDir, config } = await createVault({ initialize: true });
     const sourceRoot = await createTempDir("memory-wiki-import-placeholder-");
     const sourcePath = path.join(sourceRoot, "chatgpt-export.json");
-    await fs.writeFile(sourcePath, "{}", "utf8");
+    await fs.writeFile(
+      sourcePath,
+      JSON.stringify([
+        {
+          id: "conv-alpha",
+          title: "Alpha thread",
+          create_time: 1_710_000_000,
+          update_time: 1_710_000_100,
+          mapping: {
+            root: {
+              message: {
+                author: { role: "user" },
+                content: { parts: ["hello alpha"] },
+              },
+            },
+            branch: {
+              message: {
+                author: { role: "assistant" },
+                content: { parts: ["hi there"] },
+              },
+            },
+          },
+        },
+      ]),
+      "utf8",
+    );
 
-    await expect(
-      importMemoryWikiInput({
-        config,
-        inputPath: sourcePath,
-        profileId: "chatgpt-export",
-      }),
-    ).rejects.toThrow("reserved but not implemented");
+    const result = await importMemoryWikiInput({
+      config,
+      inputPath: sourcePath,
+      profileId: "chatgpt-export",
+    });
+
+    expect(result.profileId).toBe("chatgpt-export");
+    expect(result.importedCount).toBe(1);
+    const importedPage = await fs.readFile(path.join(rootDir, result.pagePaths[0]), "utf8");
+    const parsedImportedPage = parseWikiMarkdown(importedPage);
+    expect(parsedImportedPage.frontmatter).toMatchObject({
+      sourceType: "chatgpt-export",
+      importProfile: "chatgpt-export",
+      importedTags: ["chatgpt-export"],
+      importedAliases: ["conv-alpha"],
+    });
+    expect(parsedImportedPage.body).toContain("## Conversation Transcript");
+    expect(parsedImportedPage.body).toContain("### User");
+    expect(parsedImportedPage.body).toContain("hello alpha");
+    expect(parsedImportedPage.body).toContain("### Assistant");
+    expect(parsedImportedPage.body).toContain("hi there");
   });
 
-  it("auto-detects likely ChatGPT export files into the placeholder lane", async () => {
-    const { config } = await createVault({ initialize: true });
+  it("auto-detects likely ChatGPT export files into the chatgpt-export importer", async () => {
+    const { rootDir, config } = await createVault({ initialize: true });
     const sourceRoot = await createTempDir("memory-wiki-import-chatgpt-auto-");
     const sourcePath = path.join(sourceRoot, "export.json");
     await fs.writeFile(
@@ -154,12 +193,16 @@ alpha body with [[Beta Project|Beta]] and [Plan](projects/beta.md).
       "utf8",
     );
 
-    await expect(
-      importMemoryWikiInput({
-        config,
-        inputPath: sourcePath,
-      }),
-    ).rejects.toThrow("reserved but not implemented");
+    const result = await importMemoryWikiInput({
+      config,
+      inputPath: sourcePath,
+    });
+
+    expect(result.profileId).toBe("chatgpt-export");
+    expect(result.importedCount).toBe(1);
+    await expect(fs.readFile(path.join(rootDir, result.reportPath), "utf8")).resolves.toContain(
+      "Profile: `chatgpt-export` (automatic)",
+    );
   });
 
   it("writes duplicate and low-signal review sections for vault imports", async () => {

@@ -138,4 +138,12 @@ describe("loadWebMedia", () => {
     expect(result.kind).toBe("image");
     expect(result.buffer.length).toBeGreaterThan(0);
   });
+
+  it("rejects traversal-style canvas media paths before filesystem access", async () => {
+    await expect(
+      loadWebMedia(`${CANVAS_HOST_PATH}/documents/../collection.media/tiny.png`),
+    ).rejects.toMatchObject({
+      code: "path-not-allowed",
+    });
+  });
 });

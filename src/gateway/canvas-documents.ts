@@ -86,7 +86,12 @@ function canvasDocumentId(): string {
 
 function normalizeCanvasDocumentId(value: string): string {
   const normalized = value.trim();
-  if (!normalized || !/^[A-Za-z0-9._-]+$/.test(normalized)) {
+  if (
+    !normalized ||
+    normalized === "." ||
+    normalized === ".." ||
+    !/^[A-Za-z0-9._-]+$/.test(normalized)
+  ) {
     throw new Error("canvas document id invalid");
   }
   return normalized;
@@ -141,10 +146,23 @@ export function resolveCanvasHttpPathToLocalPath(
   if (segments.length < 2) {
     return null;
   }
-  const [documentId, ...entrySegments] = segments;
+  const [rawDocumentId, ...entrySegments] = segments;
   try {
+    const documentId = normalizeCanvasDocumentId(rawDocumentId);
     const normalizedEntrypoint = normalizeLogicalPath(entrySegments.join("/"));
-    return path.join(resolveCanvasDocumentDir(documentId, options), normalizedEntrypoint);
+    const documentsDir = path.resolve(
+      resolveCanvasDocumentsDir(options?.rootDir, options?.stateDir),
+    );
+    const candidatePath = path.resolve(
+      resolveCanvasDocumentDir(documentId, options),
+      normalizedEntrypoint,
+    );
+    if (
+      !(candidatePath === documentsDir || candidatePath.startsWith(`${documentsDir}${path.sep}`))
+    ) {
+      return null;
+    }
+    return candidatePath;
   } catch {
     return null;
   }

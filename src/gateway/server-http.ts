@@ -272,12 +272,19 @@ type GatewayHttpRequestStage = {
   run: () => Promise<boolean> | boolean;
 };
 
-async function runGatewayHttpRequestStages(
+export async function runGatewayHttpRequestStages(
   stages: readonly GatewayHttpRequestStage[],
 ): Promise<boolean> {
   for (const stage of stages) {
-    if (await stage.run()) {
-      return true;
+    try {
+      if (await stage.run()) {
+        return true;
+      }
+    } catch (err) {
+      // Log and skip the failing stage so subsequent stages (control-ui,
+      // gateway-probes, etc.) remain reachable. A common trigger is a
+      // plugin-owned route/runtime code still failing to load an optional dependency.
+      console.error(`[gateway-http] stage "${stage.name}" threw — skipping:`, err);
     }
   }
   return false;
@@ -968,7 +975,8 @@ export function createGatewayHttpServer(opts: {
       res.statusCode = 404;
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
       res.end("Not Found");
-    } catch {
+    } catch (err) {
+      console.error("[gateway-http] unhandled error in request handler:", err);
       res.statusCode = 500;
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
       res.end("Internal Server Error");

@@ -7,6 +7,7 @@ import {
   createCanvasDocument,
   resolveCanvasDocumentAssets,
   resolveCanvasDocumentDir,
+  resolveCanvasHttpPathToLocalPath,
 } from "./canvas-documents.js";
 
 const tempDirs: string[] = [];
@@ -218,5 +219,17 @@ describe("canvas documents", () => {
     );
     expect(indexHtml).toContain('type="application/pdf"');
     expect(indexHtml).toContain('data="https://example.com/demo.pdf"');
+  });
+
+  it("rejects traversal-style document ids in hosted canvas paths", async () => {
+    const stateDir = await mkdtemp(path.join(tmpdir(), "openclaw-canvas-documents-"));
+    tempDirs.push(stateDir);
+
+    expect(
+      resolveCanvasHttpPathToLocalPath(
+        "/__openclaw__/canvas/documents/../collection.media/index.html",
+        { stateDir },
+      ),
+    ).toBeNull();
   });
 });

@@ -154,6 +154,27 @@ describe("message-normalizer", () => {
       ]);
     });
 
+    it("marks media-only audio attachments as voice notes when audio_as_voice is present", () => {
+      const result = normalizeMessage({
+        role: "assistant",
+        content: "MEDIA:https://example.com/voice.ogg\n[[audio_as_voice]]",
+      });
+
+      expect(result.audioAsVoice).toBe(true);
+      expect(result.content).toEqual([
+        {
+          type: "attachment",
+          attachment: {
+            url: "https://example.com/voice.ogg",
+            kind: "audio",
+            label: "voice.ogg",
+            mimeType: "audio/ogg",
+            isVoiceNote: true,
+          },
+        },
+      ]);
+    });
+
     it("keeps valid local MEDIA paths as assistant attachments", () => {
       const result = normalizeMessage({
         role: "assistant",

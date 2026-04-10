@@ -149,7 +149,7 @@ function expandTextContent(text: string): {
   const extracted = extractCanvasShortcodes(text);
   const parsed = splitMediaFromOutput(extracted.text);
   const parts: MessageContentItem[] = [];
-  let audioAsVoice = false;
+  let audioAsVoice = parsed.audioAsVoice === true;
   let replyTarget: NormalizedMessage["replyTarget"] = null;
   const segments = parsed.segments ?? [{ type: "text" as const, text: parsed.text }];
 
@@ -175,7 +175,7 @@ function expandTextContent(text: string): {
       stripAudioTag: true,
       stripReplyTags: true,
     });
-    audioAsVoice = audioAsVoice || directives.audioAsVoice || parsed.audioAsVoice === true;
+    audioAsVoice = audioAsVoice || directives.audioAsVoice;
     if (directives.replyToExplicitId) {
       replyTarget = { kind: "id", id: directives.replyToExplicitId };
     } else if (directives.replyToCurrent && replyTarget === null) {

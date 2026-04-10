@@ -18,12 +18,17 @@ const mockState = vi.hoisted(() => ({
   sessionId: "sess-1",
   mainSessionKey: "main",
   finalText: "[[reply_to_current]]",
+  finalPayload: null as { text?: string; mediaUrl?: string } | null,
   dispatchError: null as Error | null,
   triggerAgentRunStart: false,
   agentRunId: "run-agent-1",
   sessionEntry: {} as Record<string, unknown>,
   lastDispatchCtx: undefined as MsgContext | undefined,
   lastDispatchImages: undefined as Array<{ mimeType: string; data: string }> | undefined,
+  lastDispatchImageOrder: undefined as string[] | undefined,
+  modelCatalog: null as
+    | Array<{ provider: string; id: string; name?: string; input?: string[] }>
+    | null,
   emittedTranscriptUpdates: [] as Array<{
     sessionFile: string;
     sessionKey?: string;
@@ -31,6 +36,7 @@ const mockState = vi.hoisted(() => ({
     messageId?: string;
   }>,
   savedMediaResults: [] as Array<{ path: string; contentType?: string }>,
+  saveMediaError: null as Error | null,
   savedMediaCalls: [] as Array<{ contentType?: string; subdir?: string; size: number }>,
   saveMediaWait: null as Promise<void> | null,
   activeSaveMediaCalls: 0,
@@ -86,17 +92,19 @@ vi.mock("../../auto-reply/dispatch.js", () => ({
       replyOptions?: {
         onAgentRunStart?: (runId: string) => void;
         images?: Array<{ mimeType: string; data: string }>;
+        imageOrder?: string[];
       };
     }) => {
       mockState.lastDispatchCtx = params.ctx;
       mockState.lastDispatchImages = params.replyOptions?.images;
+      mockState.lastDispatchImageOrder = params.replyOptions?.imageOrder;
       if (mockState.dispatchError) {
         throw mockState.dispatchError;
       }
       if (mockState.triggerAgentRunStart) {
         params.replyOptions?.onAgentRunStart?.(mockState.agentRunId);
       }
-      params.dispatcher.sendFinalReply({ text: mockState.finalText });
+      params.dispatcher.sendFinalReply(mockState.finalPayload ?? { text: mockState.finalText });
       params.dispatcher.markComplete();
       await params.dispatcher.waitForIdle();
       return { ok: true };
@@ -130,6 +138,10 @@ vi.mock("../../media/store.js", async () => {
       );
       if (mockState.saveMediaWait) {
         await mockState.saveMediaWait;
+      }
+      if (mockState.saveMediaError) {
+        mockState.activeSaveMediaCalls -= 1;
+        throw mockState.saveMediaError;
       }
       mockState.savedMediaCalls.push({ contentType, subdir, size: buffer.byteLength });
       const next = mockState.savedMediaResults.shift();
@@ -254,20 +266,21 @@ function createChatContext(): Pick<
     chatAbortedRuns: new Map(),
     removeChatRun: vi.fn(),
     dedupe: new Map(),
-    loadGatewayModelCatalog: async () => [
-      {
-        provider: "openai",
-        id: "gpt-5.4",
-        name: "GPT-5.4",
-        input: ["text", "image"],
-      },
-      {
-        provider: "anthropic",
-        id: "claude-opus-4-6",
-        name: "Claude Opus 4.6",
-        input: ["text", "image"],
-      },
-    ],
+    loadGatewayModelCatalog: async () =>
+      mockState.modelCatalog ?? [
+        {
+          provider: "openai",
+          id: "gpt-5.4",
+          name: "GPT-5.4",
+          input: ["text", "image"],
+        },
+        {
+          provider: "anthropic",
+          id: "claude-opus-4-6",
+          name: "Claude Opus 4.6",
+          input: ["text", "image"],
+        },
+      ],
     registerToolEventRecipient: vi.fn(),
     logGateway: {
       warn: vi.fn(),
@@ -351,6 +364,7 @@ async function runNonStreamingChatSend(params: {
 describe("chat directive tag stripping for non-streaming final payloads", () => {
   afterEach(() => {
     mockState.finalText = "[[reply_to_current]]";
+    mockState.finalPayload = null;
     mockState.dispatchError = null;
     mockState.mainSessionKey = "main";
     mockState.triggerAgentRunStart = false;
@@ -358,8 +372,11 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     mockState.sessionEntry = {};
     mockState.lastDispatchCtx = undefined;
     mockState.lastDispatchImages = undefined;
+    mockState.lastDispatchImageOrder = undefined;
+    mockState.modelCatalog = null;
     mockState.emittedTranscriptUpdates = [];
     mockState.savedMediaResults = [];
+    mockState.saveMediaError = null;
     mockState.savedMediaCalls = [];
     mockState.saveMediaWait = null;
     mockState.activeSaveMediaCalls = 0;
@@ -1678,6 +1695,149 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         mockState.emittedTranscriptUpdates.find((update) => update.message !== undefined),
       ).toBeDefined();
     });
+  });
+
+  it("preserves media-only final replies in the final broadcast message", async () => {
+    createTranscriptFixture("openclaw-chat-send-media-only-final-");
+    mockState.finalPayload = { mediaUrl: "https://example.com/final.png" };
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    const payload = await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-media-only-final",
+    });
+
+    expect(extractFirstTextBlock(payload)).toBe("MEDIA:https://example.com/final.png");
+  });
+
+  it("drops image attachments for text-only session models", async () => {
+    createTranscriptFixture("openclaw-chat-send-text-only-attachments-");
+    mockState.finalText = "ok";
+    mockState.sessionEntry = {
+      modelProvider: "test-provider",
+      model: "text-only",
+    };
+    mockState.modelCatalog = [
+      {
+        provider: "test-provider",
+        id: "text-only",
+        name: "Text only",
+        input: ["text"],
+      },
+    ];
+    const respond = vi.fn();
+    const context = createChatContext();
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-text-only-attachments",
+      message: "describe image",
+      requestParams: {
+        attachments: [
+          {
+            mimeType: "image/png",
+            content:
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=",
+          },
+        ],
+      },
+      expectBroadcast: false,
+    });
+
+    expect(mockState.lastDispatchImages).toBeUndefined();
+    expect(mockState.lastDispatchImageOrder).toBeUndefined();
+  });
+
+  it("passes imageOrder for mixed inline and offloaded chat.send attachments", async () => {
+    createTranscriptFixture("openclaw-chat-send-image-order-");
+    mockState.finalText = "ok";
+    mockState.sessionEntry = {
+      modelProvider: "test-provider",
+      model: "vision-model",
+    };
+    mockState.modelCatalog = [
+      {
+        provider: "test-provider",
+        id: "vision-model",
+        name: "Vision model",
+        input: ["text", "image"],
+      },
+    ];
+    mockState.savedMediaResults = [{ path: "/tmp/offloaded-big.png", contentType: "image/png" }];
+    const respond = vi.fn();
+    const context = createChatContext();
+    const bigPng = Buffer.alloc(2_100_000);
+    bigPng.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-image-order",
+      message: "describe both",
+      requestParams: {
+        attachments: [
+          {
+            mimeType: "image/png",
+            content:
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/woAAn8B9FD5fHAAAAAASUVORK5CYII=",
+          },
+          {
+            mimeType: "image/png",
+            content: bigPng.toString("base64"),
+          },
+        ],
+      },
+      expectBroadcast: false,
+    });
+
+    expect(mockState.lastDispatchImages).toHaveLength(1);
+    expect(mockState.lastDispatchImageOrder).toEqual(["inline", "offloaded"]);
+  });
+
+  it("maps media offload failures to UNAVAILABLE in chat.send", async () => {
+    createTranscriptFixture("openclaw-chat-send-media-offload-error-");
+    mockState.sessionEntry = {
+      modelProvider: "test-provider",
+      model: "vision-model",
+    };
+    mockState.modelCatalog = [
+      {
+        provider: "test-provider",
+        id: "vision-model",
+        name: "Vision model",
+        input: ["text", "image"],
+      },
+    ];
+    mockState.saveMediaError = new Error("disk full");
+    const respond = vi.fn();
+    const context = createChatContext();
+    const bigPng = Buffer.alloc(2_100_000);
+    bigPng.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+
+    await runNonStreamingChatSend({
+      context,
+      respond,
+      idempotencyKey: "idem-media-offload-error",
+      message: "describe image",
+      requestParams: {
+        attachments: [
+          {
+            mimeType: "image/png",
+            content: bigPng.toString("base64"),
+          },
+        ],
+      },
+      waitFor: "none",
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: ErrorCodes.UNAVAILABLE }),
+    );
   });
 
   it("persists chat.send attachments one at a time", async () => {

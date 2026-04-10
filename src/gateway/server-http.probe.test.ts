@@ -112,6 +112,52 @@ describe("gateway probe endpoints", () => {
     });
   });
 
+  it("hides readiness details when trusted-proxy auth violates browser origin policy", async () => {
+    const getReadiness: ReadinessChecker = () => ({
+      ready: false,
+      failing: ["discord", "telegram"],
+      uptimeMs: 8_000,
+    });
+
+    await withGatewayServer({
+      prefix: "probe-remote-origin-rejected",
+      resolvedAuth: {
+        mode: "trusted-proxy",
+        allowTailscale: false,
+        trustedProxy: { userHeader: "x-forwarded-user" },
+      },
+      overrides: {
+        getReadiness,
+        configPatch: {
+          gateway: {
+            trustedProxies: ["10.0.0.1"],
+            controlUi: {
+              allowedOrigins: ["https://control.example"],
+            },
+          },
+        },
+      },
+      run: async (server) => {
+        const req = createRequest({
+          path: "/ready",
+          remoteAddress: "10.0.0.1",
+          host: "gateway.test",
+          headers: {
+            origin: "https://evil.example",
+            forwarded: "for=203.0.113.10;proto=https;host=gateway.test",
+            "x-forwarded-user": "user@example.com",
+            "x-forwarded-proto": "https",
+          },
+        });
+        const { res, getBody } = createResponse();
+        await dispatchRequest(server, req, res);
+
+        expect(res.statusCode).toBe(503);
+        expect(JSON.parse(getBody())).toEqual({ ready: false });
+      },
+    });
+  });
+
   it("returns typed internal error payload when readiness evaluation throws", async () => {
     const getReadiness: ReadinessChecker = () => {
       throw new Error("boom");

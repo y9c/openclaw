@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT_DIR/scripts/e2e/lib/parallels-macos-common.sh"
 source "$ROOT_DIR/scripts/e2e/lib/parallels-discord-common.sh"
+source "$ROOT_DIR/scripts/e2e/lib/parallels-permissions-common.sh"
 source "$ROOT_DIR/scripts/e2e/lib/parallels-windows-common.sh"
 
 MACOS_VM="macOS Tahoe"
@@ -1523,25 +1524,7 @@ if [ -n "$expected_needle" ]; then
   esac
 fi
 /opt/homebrew/bin/openclaw update status --json
-root="\$(/opt/homebrew/bin/npm root -g)"
-check_path() {
-  local path="\$1"
-  [ -e "\$path" ] || return 0
-  local perm perm_oct
-  perm="$(/usr/bin/stat -f '%OLp' "\$path")"
-  perm_oct=\$((8#\$perm))
-  if (( perm_oct & 0002 )); then
-    echo "world-writable install artifact: \$path (\$perm)" >&2
-    exit 1
-  fi
-}
-check_path "\$root/openclaw"
-check_path "\$root/openclaw/extensions"
-if [ -d "\$root/openclaw/extensions" ]; then
-  while IFS= read -r -d '' extension_dir; do
-    check_path "\$extension_dir"
-  done < <(/usr/bin/find "\$root/openclaw/extensions" -mindepth 1 -maxdepth 1 -type d -print0)
-fi
+$(parallels_macos_permission_check_snippet)
 /opt/homebrew/bin/openclaw models set "$MODEL_ID"
 # Same-guest npm upgrades can leave launchd holding the old gateway process or
 # module graph briefly; wait for a fresh RPC-ready restart before the agent turn.
@@ -1699,25 +1682,7 @@ if [ -n "$expected_needle" ]; then
   esac
 fi
 openclaw update status --json
-root="\$(npm root -g)"
-check_path() {
-  local path="\$1"
-  [ -e "\$path" ] || return 0
-  local perm perm_oct
-  perm="\$(stat -c '%a' "\$path")"
-  perm_oct=\$((8#\$perm))
-  if (( perm_oct & 0002 )); then
-    echo "world-writable install artifact: \$path (\$perm)" >&2
-    exit 1
-  fi
-}
-check_path "\$root/openclaw"
-check_path "\$root/openclaw/extensions"
-if [ -d "\$root/openclaw/extensions" ]; then
-  while IFS= read -r -d '' extension_dir; do
-    check_path "\$extension_dir"
-  done < <(find "\$root/openclaw/extensions" -mindepth 1 -maxdepth 1 -type d -print0)
-fi
+$(parallels_linux_permission_check_snippet)
 openclaw models set "$MODEL_ID"
 # Linux update validation should prove the manual gateway comes back too, not
 # just that local agent mode still works with the provider key in env.

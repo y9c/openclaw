@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "$ROOT_DIR/scripts/e2e/lib/parallels-discord-common.sh"
+source "$ROOT_DIR/scripts/e2e/lib/parallels-permissions-common.sh"
 
 VM_NAME="Ubuntu 24.04.3 ARM64"
 VM_NAME_EXPLICIT=0
@@ -738,28 +739,10 @@ verify_local_turn() {
 
 verify_bundle_permissions() {
   local cmd
-  cmd="$(cat <<'EOF'
+  cmd="$(cat <<EOF
 set -eu
 set -o pipefail
-root="$(npm root -g)"
-check_path() {
-  local path="$1"
-  [ -e "$path" ] || return 0
-  local perm perm_oct
-  perm="$(stat -c '%a' "$path")"
-  perm_oct=$((8#$perm))
-  if (( perm_oct & 0002 )); then
-    echo "world-writable install artifact: $path ($perm)" >&2
-    exit 1
-  fi
-}
-check_path "$root/openclaw"
-check_path "$root/openclaw/extensions"
-if [ -d "$root/openclaw/extensions" ]; then
-  while IFS= read -r -d '' extension_dir; do
-    check_path "$extension_dir"
-  done < <(find "$root/openclaw/extensions" -mindepth 1 -maxdepth 1 -type d -print0)
-fi
+$(parallels_linux_permission_check_snippet)
 EOF
 )"
   guest_exec bash -lc "$cmd"

@@ -596,6 +596,13 @@ install_main_tgz() {
   guest_exec openclaw --version
 }
 
+run_main_package_update() {
+  local host_ip="$1"
+  local tgz_url="http://$host_ip:$HOST_PORT/$(basename "$MAIN_TGZ_PATH")"
+  guest_exec openclaw update --tag "$tgz_url" --yes --json
+  guest_exec openclaw --version
+}
+
 verify_version_contains() {
   local needle="$1"
   local version
@@ -802,8 +809,8 @@ run_upgrade_lane() {
   phase_run "upgrade.install-latest" "$TIMEOUT_INSTALL_S" install_latest_release
   LATEST_INSTALLED_VERSION="$(extract_last_version "$(phase_log_path upgrade.install-latest)")"
   phase_run "upgrade.verify-latest-version" "$TIMEOUT_VERIFY_S" verify_version_contains "$LATEST_VERSION"
-  phase_run "upgrade.install-main" "$TIMEOUT_INSTALL_S" install_main_tgz "$host_ip" "openclaw-main-upgrade.tgz"
-  UPGRADE_MAIN_VERSION="$(extract_last_version "$(phase_log_path upgrade.install-main)")"
+  phase_run "upgrade.update-main" "$TIMEOUT_INSTALL_S" run_main_package_update "$host_ip"
+  UPGRADE_MAIN_VERSION="$(extract_last_version "$(phase_log_path upgrade.update-main)")"
   phase_run "upgrade.verify-main-version" "$TIMEOUT_VERIFY_S" verify_target_version
   phase_run "upgrade.onboard-ref" "$TIMEOUT_ONBOARD_S" run_ref_onboard
   phase_run "upgrade.gateway-start" "$TIMEOUT_GATEWAY_S" start_gateway_background

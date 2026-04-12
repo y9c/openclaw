@@ -1034,6 +1034,28 @@ if [ -n "$expected_needle" ]; then
 fi
 openclaw update status --json
 openclaw models set "$MODEL_ID"
+# Linux update validation should prove the manual gateway comes back too, not
+# just that local agent mode still works with the provider key in env.
+api_key_value="\$(printenv ${API_KEY_ENV})"
+[ -n "\$api_key_value" ] || {
+  echo "${API_KEY_ENV} is required in the Linux update environment" >&2
+  exit 1
+}
+setsid sh -lc 'exec env OPENCLAW_HOME=/root OPENCLAW_STATE_DIR=/root/.openclaw OPENCLAW_CONFIG_PATH=/root/.openclaw/openclaw.json ${API_KEY_ENV}="'"\$api_key_value"'" openclaw gateway run --bind loopback --port 18789 --force >/tmp/openclaw-parallels-npm-update-linux-gateway.log 2>&1' >/dev/null 2>&1 < /dev/null &
+gateway_ready=0
+for _ in 1 2 3 4 5 6 7 8; do
+  if openclaw gateway status --deep --require-rpc >/dev/null 2>&1; then
+    gateway_ready=1
+    break
+  fi
+  sleep 2
+done
+if [ "\$gateway_ready" != "1" ]; then
+  tail -n 120 /tmp/openclaw-parallels-npm-update-linux-gateway.log 2>/dev/null || true
+  echo "Linux gateway did not become RPC-ready after update" >&2
+  exit 1
+fi
+openclaw gateway status --deep --require-rpc
 openclaw agent --local --agent main --session-id parallels-npm-update-linux-$expected_needle --message "Reply with exact ASCII text OK only." --json
 EOF
   prlctl exec "$LINUX_VM" /usr/bin/env "$API_KEY_ENV=$API_KEY_VALUE" /bin/bash /tmp/openclaw-main-update.sh

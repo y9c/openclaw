@@ -1,0 +1,12 @@
+{
+  "name": "@openclaw/hook-echo-plugin",
+  "version": "2026.4.15-beta.1",
+  "private": true,
+  "description": "Diagnostic plugin that echoes all lifecycle hook events",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

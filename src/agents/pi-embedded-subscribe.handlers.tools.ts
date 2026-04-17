@@ -1116,9 +1116,12 @@ export async function handleToolExecutionEnd(
     sanitizedResult,
   });
 
-  // Run after_tool_call plugin hook (fire-and-forget)
+  // Run after_tool_call plugin hooks (sync gate + async)
   const hookRunnerAfter = ctx.hookRunner ?? (await loadHookRunnerGlobal()).getGlobalHookRunner();
-  if (hookRunnerAfter?.hasHooks("after_tool_call")) {
+  const hasSyncHooks = hookRunnerAfter?.hasHooks("after_tool_call");
+  const hasAsyncHooks = hookRunnerAfter?.hasAsyncHooks("after_tool_call");
+
+  if (hasSyncHooks || hasAsyncHooks) {
     const { consumeAdjustedParamsForToolCall } = await loadBeforeToolCall();
     const adjustedArgs = consumeAdjustedParamsForToolCall(toolCallId, runId);
     const afterToolCallArgs =
@@ -1135,17 +1138,54 @@ export async function handleToolExecutionEnd(
       error: isToolError ? extractToolErrorMessage(sanitizedResult) : undefined,
       durationMs,
     };
-    void hookRunnerAfter
-      .runAfterToolCall(hookEvent, {
+
+    // Sync gate
+    if (hasSyncHooks) {
+      const afterToolDecision = await hookRunnerAfter!.runAfterToolCall(hookEvent, {
         toolName,
         agentId: ctx.params.agentId,
         sessionKey: ctx.params.sessionKey,
         sessionId: ctx.params.sessionId,
         runId,
         toolCallId,
-      })
-      .catch((err) => {
-        ctx.log.warn(`after_tool_call hook failed: tool=${toolName} error=${String(err)}`);
       });
+      if (afterToolDecision?.outcome === "block") {
+        ctx.log.warn(
+          `after_tool_call hook blocked tool=${toolName}: ${afterToolDecision.reason}`,
+        );
+        // The tool result was already emitted above via emitToolResultOutput.
+        // We can't un-emit it, but we log the block decision.
+        // TODO: wire redact path once sessionFile is available on ToolHandlerContext
+      }
+
+      if (afterToolDecision?.outcome === "redact") {
+        ctx.log.warn(
+          `after_tool_call hook requested redact for tool=${toolName}: ${afterToolDecision.reason}`,
+        );
+        // TODO: redact requires sessionFile on ToolHandlerContext — deferred
+      }
+    }
+
+    // Fire async after_tool_call handlers (non-blocking)
+    if (hasAsyncHooks) {
+      hookRunnerAfter!.fireAsync(
+        "after_tool_call",
+        hookEvent,
+        {
+          toolName,
+          agentId: ctx.params.agentId,
+          sessionKey: ctx.params.sessionKey,
+          sessionId: ctx.params.sessionId,
+          runId,
+          toolCallId,
+        },
+        (decision, pluginId) => {
+          ctx.log.warn(
+            `after_tool_call async intervention from ${pluginId}: ${decision.outcome} — ${(decision as { reason?: string }).reason ?? "no reason"}`,
+          );
+          // Log only — no sessionFile available for redaction. Deferred.
+        },
+      );
+    }
   }
 }

@@ -1707,7 +1707,7 @@ export async function runEmbeddedAttempt(
 
       let promptError: unknown = null;
       let preflightRecovery: EmbeddedRunAttemptResult["preflightRecovery"];
-      let promptErrorSource: "prompt" | "compaction" | "precheck" | null = null;
+      let promptErrorSource: EmbeddedRunAttemptResult["promptErrorSource"] = null;
       let skipPromptSubmission = false;
       try {
         const promptStartedAt = Date.now();
@@ -1929,6 +1929,70 @@ export async function runEmbeddedAttempt(
             );
           }
 
+          // Run before_agent_run gate hook (sync path)
+          if (hookRunner?.hasHooks("before_agent_run")) {
+            const beforeRunDecision = await hookRunner.runBeforeAgentRun(
+              {
+                prompt: effectivePrompt,
+                messages: activeSession.messages,
+                channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+                // TODO: wire senderId/senderIsOwner from message context
+              },
+              {
+                runId: params.runId,
+                agentId: hookAgentId,
+                sessionKey: params.sessionKey,
+                sessionId: params.sessionId,
+                workspaceDir: params.workspaceDir,
+                messageProvider: params.messageProvider ?? undefined,
+                trigger: params.trigger,
+                channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+              },
+            );
+            if (beforeRunDecision?.outcome === "block") {
+              log.warn(`before_agent_run hook blocked: ${beforeRunDecision.reason}`);
+              promptError = new Error(
+                beforeRunDecision.userMessage ?? "Request blocked by policy.",
+              );
+              promptErrorSource = "hook:before_agent_run";
+              skipPromptSubmission = true;
+            } else if (beforeRunDecision?.outcome === "ask") {
+              log.warn(`before_agent_run hook requesting approval: ${beforeRunDecision.reason}`);
+              const { requestHookApproval } = await import("../../../plugins/hook-approval.js");
+              const approvalResult = await requestHookApproval({
+                hookPoint: "before_agent_run",
+                decision: beforeRunDecision,
+                pluginId: undefined,
+                runId: params.runId,
+                sessionKey: params.sessionKey,
+                agentId: hookAgentId,
+                channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+                signal: params.abortSignal,
+                log,
+              });
+              if (approvalResult === "deny" || approvalResult === "cancelled") {
+                log.warn(`before_agent_run hook approval denied`);
+                promptError = new Error(
+                  beforeRunDecision.denialMessage ?? "Request denied by owner.",
+                );
+                promptErrorSource = "hook:before_agent_run";
+                skipPromptSubmission = true;
+              } else if (approvalResult === "timeout") {
+                const behavior = beforeRunDecision.timeoutBehavior ?? "deny";
+                if (behavior === "deny") {
+                  log.warn(`before_agent_run hook approval timed out (behavior=deny)`);
+                  promptError = new Error(beforeRunDecision.denialMessage ?? "Approval timed out.");
+                  promptErrorSource = "hook:before_agent_run";
+                  skipPromptSubmission = true;
+                } else {
+                  log.warn(`before_agent_run hook approval timed out (behavior=allow), proceeding`);
+                }
+              } else {
+                log.warn(`before_agent_run hook approval granted (${approvalResult}), proceeding`);
+              }
+            }
+          }
+
           if (hookRunner?.hasHooks("llm_input")) {
             hookRunner
               .runLlmInput(
@@ -2003,7 +2067,7 @@ export async function runEmbeddedAttempt(
                 handled: true,
                 truncatedCount: truncationResult.truncatedCount,
               };
-              log.info(
+              log.warn(
                 `[context-overflow-precheck] early tool-result truncation succeeded for ` +
                   `${params.provider}/${params.modelId} route=${preemptiveCompaction.route} ` +
                   `truncatedCount=${truncationResult.truncatedCount} ` +
@@ -2423,31 +2487,168 @@ export async function runEmbeddedAttempt(
       }
 
       if (hookRunner?.hasHooks("llm_output")) {
-        hookRunner
-          .runLlmOutput(
+        const llmOutputDecision = await hookRunner.runLlmOutput(
+          {
+            runId: params.runId,
+            sessionId: params.sessionId,
+            provider: params.provider,
+            model: params.modelId,
+            assistantTexts,
+            lastAssistant,
+            usage: attemptUsage,
+          },
+          {
+            runId: params.runId,
+            agentId: hookAgentId,
+            sessionKey: params.sessionKey,
+            sessionId: params.sessionId,
+            workspaceDir: params.workspaceDir,
+            messageProvider: params.messageProvider ?? undefined,
+            trigger: params.trigger,
+            channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+          },
+        );
+        if (llmOutputDecision?.outcome === "block") {
+          log.warn(`llm_output hook blocked: ${llmOutputDecision.reason}`);
+          // Redact the assistant response from the transcript
+          const { redactMessages } = await import("../../../plugins/hook-redaction.js");
+          await redactMessages(
+            params.sessionFile,
             {
-              runId: params.runId,
-              sessionId: params.sessionId,
-              provider: params.provider,
-              model: params.modelId,
-              assistantTexts,
-              lastAssistant,
-              usage: attemptUsage,
+              match: {
+                role: "assistant",
+                contentSubstring: (assistantTexts[0] ?? "").slice(0, 100),
+              },
             },
             {
-              runId: params.runId,
-              agentId: hookAgentId,
-              sessionKey: params.sessionKey,
-              sessionId: params.sessionId,
-              workspaceDir: params.workspaceDir,
-              messageProvider: params.messageProvider ?? undefined,
-              trigger: params.trigger,
-              channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+              reason: llmOutputDecision.reason,
+              hookPoint: "llm_output",
+              pluginId: "unknown",
+              timestamp: Date.now(),
             },
-          )
-          .catch((err) => {
-            log.warn(`llm_output hook failed: ${String(err)}`);
+          );
+          // Clear assistantTexts so the caller doesn't surface the blocked content
+          assistantTexts.length = 0;
+          // Set error so the caller knows to surface the userMessage
+          promptError = new Error(llmOutputDecision.userMessage ?? "Response blocked by policy.");
+          promptErrorSource = "hook:llm_output";
+        } else if (llmOutputDecision?.outcome === "redact") {
+          log.warn(`llm_output hook redacted: ${llmOutputDecision.reason}`);
+          const { redactMessages } = await import("../../../plugins/hook-redaction.js");
+          await redactMessages(
+            params.sessionFile,
+            {
+              match: {
+                role: "assistant",
+                contentSubstring: (assistantTexts[0] ?? "").slice(0, 100),
+              },
+            },
+            {
+              reason: llmOutputDecision.reason,
+              hookPoint: "llm_output",
+              pluginId: "unknown",
+              timestamp: Date.now(),
+            },
+          );
+          // Replace the assistant text with the replacement message
+          assistantTexts.length = 0;
+          if (llmOutputDecision.replacementMessage) {
+            assistantTexts.push(llmOutputDecision.replacementMessage);
+          }
+        } else if (llmOutputDecision?.outcome === "ask") {
+          log.warn(`llm_output hook requesting approval: ${llmOutputDecision.reason}`);
+          const { requestHookApproval } = await import("../../../plugins/hook-approval.js");
+          const approvalResult = await requestHookApproval({
+            hookPoint: "llm_output",
+            decision: llmOutputDecision,
+            pluginId: undefined,
+            runId: params.runId,
+            sessionKey: params.sessionKey,
+            agentId: hookAgentId,
+            channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+            signal: params.abortSignal,
+            log,
           });
+          const shouldDeny =
+            approvalResult === "deny" ||
+            approvalResult === "cancelled" ||
+            (approvalResult === "timeout" &&
+              (llmOutputDecision.timeoutBehavior ?? "deny") === "deny");
+          if (shouldDeny) {
+            log.warn(`llm_output hook approval denied/timed out, redacting response`);
+            // Retract the streamed response — same as redact path
+            const { redactMessages } = await import("../../../plugins/hook-redaction.js");
+            await redactMessages(
+              params.sessionFile,
+              {
+                match: {
+                  role: "assistant",
+                  contentSubstring: (assistantTexts[0] ?? "").slice(0, 100),
+                },
+              },
+              {
+                reason: llmOutputDecision.reason,
+                hookPoint: "llm_output:ask",
+                pluginId: "unknown",
+                timestamp: Date.now(),
+              },
+            );
+            assistantTexts.length = 0;
+            const denialMsg =
+              llmOutputDecision.denialMessage ?? "Response withheld pending review.";
+            assistantTexts.push(denialMsg);
+          } else {
+            log.warn(`llm_output hook approval granted (${approvalResult}), delivering response`);
+          }
+        }
+      }
+
+      // Fire async llm_output handlers (non-blocking)
+      let cleanupAsyncLlmOutput: (() => void) | undefined;
+      if (hookRunner?.hasAsyncHooks("llm_output")) {
+        cleanupAsyncLlmOutput = hookRunner.fireAsync(
+          "llm_output",
+          {
+            runId: params.runId,
+            sessionId: params.sessionId,
+            provider: params.provider,
+            model: params.modelId,
+            assistantTexts,
+            lastAssistant,
+            usage: attemptUsage,
+          },
+          {
+            runId: params.runId,
+            agentId: hookAgentId,
+            sessionKey: params.sessionKey,
+            sessionId: params.sessionId,
+            workspaceDir: params.workspaceDir,
+            messageProvider: params.messageProvider ?? undefined,
+            trigger: params.trigger,
+            channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+          },
+          async (decision, pluginId) => {
+            log.warn(
+              `llm_output async intervention from ${pluginId}: ${decision.outcome} — ${(decision as { reason?: string }).reason ?? "no reason"}`,
+            );
+            // For now, log the intervention. Full stream abort + retraction requires
+            // wiring into the channel delivery pipeline (deferred).
+            // The redaction can be done immediately:
+            if (decision.outcome === "redact" || decision.outcome === "block") {
+              const { redactMessages } = await import("../../../plugins/hook-redaction.js");
+              await redactMessages(
+                params.sessionFile,
+                { runId: params.runId },
+                {
+                  reason: (decision as { reason?: string }).reason ?? "async_intervention",
+                  hookPoint: "llm_output",
+                  pluginId,
+                  timestamp: Date.now(),
+                },
+              ).catch((err) => log.warn(`async llm_output redaction failed: ${err}`));
+            }
+          },
+        );
       }
 
       const observedReplayMetadata = buildAttemptReplayMetadata({
@@ -2458,6 +2659,9 @@ export async function runEmbeddedAttempt(
       const replayMetadata = replayMetadataFromState(
         observeReplayMetadata(getReplayState(), observedReplayMetadata),
       );
+
+      // Cleanup async llm_output handlers before returning
+      cleanupAsyncLlmOutput?.();
 
       return {
         replayMetadata,

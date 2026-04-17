@@ -7,6 +7,12 @@
 
 import { formatErrorMessage } from "../infra/errors.js";
 import { concatOptionalTextSegments } from "../shared/text/join-segments.js";
+import {
+  type HookDecision,
+  type HookController,
+  isHookDecision,
+  mergeHookDecisions,
+} from "./hook-decision-types.js";
 import type { GlobalHookRunnerRegistry, HookRunnerRegistry } from "./hook-registry.types.js";
 import type {
   PluginHookAfterCompactionEvent,
@@ -36,6 +42,7 @@ import type {
   PluginHookBeforeResetEvent,
   PluginHookBeforeToolCallEvent,
   PluginHookBeforeToolCallResult,
+  PluginHookBeforeAgentRunEvent,
   PluginHookGatewayContext,
   PluginHookGatewayStartEvent,
   PluginHookGatewayStopEvent,
@@ -65,6 +72,7 @@ import type {
   PluginHookBeforeInstallContext,
   PluginHookBeforeInstallEvent,
   PluginHookBeforeInstallResult,
+  PluginHookHandlerMap,
 } from "./hook-types.js";
 
 // Re-export types for consumers
@@ -101,6 +109,7 @@ export type {
   PluginHookToolContext,
   PluginHookBeforeToolCallEvent,
   PluginHookBeforeToolCallResult,
+  PluginHookBeforeAgentRunEvent,
   PluginHookAfterToolCallEvent,
   PluginHookToolResultPersistContext,
   PluginHookToolResultPersistEvent,
@@ -188,7 +197,7 @@ function getHooksForName<K extends PluginHookName>(
   hookName: K,
 ): PluginHookRegistration<K>[] {
   return (registry.typedHooks as PluginHookRegistration<K>[])
-    .filter((h) => h.hookName === hookName)
+    .filter((h) => h.hookName === hookName && h.mode !== "async")
     .toSorted((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
 }
 
@@ -600,10 +609,23 @@ export function createHookRunner(
   /**
    * Run llm_output hook.
    * Allows plugins to observe the exact output payload returned by the LLM.
-   * Runs in parallel (fire-and-forget).
+   * Returns the most-restrictive HookDecision from all sync handlers.
    */
-  async function runLlmOutput(event: PluginHookLlmOutputEvent, ctx: PluginHookAgentContext) {
-    return runVoidHook("llm_output", event, ctx);
+  async function runLlmOutput(
+    event: PluginHookLlmOutputEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<HookDecision | undefined> {
+    return runModifyingHook<"llm_output", HookDecision>("llm_output", event, ctx, {
+      mergeResults: (_acc, next) => {
+        if (!isHookDecision(next)) {
+          return _acc ?? next;
+        }
+        return mergeHookDecisions(_acc, next);
+      },
+      // ask does NOT short-circuit — keep running so other plugins can escalate to block/redact
+      shouldStop: (result) => result.outcome === "redact" || result.outcome === "block",
+      terminalLabel: "gate-decision",
+    });
   }
 
   /**
@@ -767,6 +789,46 @@ export function createHookRunner(
   }
 
   // =========================================================================
+
+  // =========================================================================
+  // Lifecycle Gate Hooks (Milestones 1 & 2)
+  // =========================================================================
+
+  /**
+   * Run before_agent_run gate hook.
+   * Fires after session resolution and workspace preparation, before model inference.
+   * Returns the most-restrictive HookDecision from all handlers.
+   * Handlers that return void are treated as pass.
+   */
+  async function runBeforeAgentRun(
+    event: PluginHookBeforeAgentRunEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<HookDecision | undefined> {
+    return runModifyingHook<"before_agent_run", HookDecision>("before_agent_run", event, ctx, {
+      mergeResults: (_acc, next) => {
+        if (!isHookDecision(next)) {
+          return _acc ?? next;
+        }
+        // redact is invalid for input gates — treat as block with a warning
+        if (next.outcome === "redact") {
+          logger?.warn?.(
+            `[hooks] before_agent_run received 'redact' outcome from plugin — treating as 'block' (redact is only valid for output gates)`,
+          );
+          const redactDecision = next;
+          next = {
+            outcome: "block",
+            reason: redactDecision.reason,
+            category: redactDecision.category,
+          };
+        }
+        return mergeHookDecisions(_acc, next);
+      },
+      // ask does NOT short-circuit — keep running so other plugins can escalate to block
+      shouldStop: (result) => result.outcome === "block",
+      terminalLabel: "gate-decision",
+    });
+  }
+
   // Tool Hooks
   // =========================================================================
 
@@ -812,13 +874,22 @@ export function createHookRunner(
 
   /**
    * Run after_tool_call hook.
-   * Runs in parallel (fire-and-forget).
+   * Returns the most-restrictive HookDecision from all sync handlers.
    */
   async function runAfterToolCall(
     event: PluginHookAfterToolCallEvent,
     ctx: PluginHookToolContext,
-  ): Promise<void> {
-    return runVoidHook("after_tool_call", event, ctx);
+  ): Promise<HookDecision | undefined> {
+    return runModifyingHook<"after_tool_call", HookDecision>("after_tool_call", event, ctx, {
+      mergeResults: (_acc, next) => {
+        if (!isHookDecision(next)) {
+          return _acc ?? next;
+        }
+        return mergeHookDecisions(_acc, next);
+      },
+      shouldStop: (result) => result.outcome === "redact" || result.outcome === "block",
+      terminalLabel: "gate-decision",
+    });
   }
 
   /**
@@ -1096,7 +1167,11 @@ export function createHookRunner(
    * Check if any hooks are registered for a given hook name.
    */
   function hasHooks(hookName: PluginHookName): boolean {
-    return registry.typedHooks.some((h) => h.hookName === hookName);
+    return registry.typedHooks.some((h) => h.hookName === hookName && h.mode !== "async");
+  }
+
+  function hasAsyncHooks(hookName: PluginHookName): boolean {
+    return registry.typedHooks.some((h) => h.hookName === hookName && h.mode === "async");
   }
 
   /**
@@ -1104,6 +1179,74 @@ export function createHookRunner(
    */
   function getHookCount(hookName: PluginHookName): number {
     return registry.typedHooks.filter((h) => h.hookName === hookName).length;
+  }
+
+  // =========================================================================
+  // Async Hook Handlers
+  // =========================================================================
+
+  /**
+   * Fire async handlers for a hook point. Returns immediately.
+   * Each handler receives a HookController for retroactive intervention.
+   * All handlers run simultaneously (no priority ordering).
+   *
+   * @param interventionCallback - called when any async handler calls intervene()
+   * @returns cleanup function to abort all pending async handlers
+   */
+  function fireAsyncHandlers<K extends PluginHookName>(
+    hookName: K,
+    event: Parameters<PluginHookHandlerMap[K]>[0],
+    ctx: Parameters<PluginHookHandlerMap[K]>[1],
+    interventionCallback: (decision: HookDecision, pluginId: string) => void,
+  ): () => void {
+    const handlers = registry.typedHooks.filter(
+      (h) => h.hookName === hookName && h.mode === "async",
+    );
+
+    if (handlers.length === 0) {
+      return () => {}; // no-op cleanup
+    }
+
+    const abortController = new AbortController();
+    let currentDecision: HookDecision | undefined;
+
+    for (const handler of handlers) {
+      const timeoutMs = handler.timeoutMs ?? 30_000;
+      const handlerAbort = new AbortController();
+
+      // Link to parent abort
+      abortController.signal.addEventListener("abort", () => handlerAbort.abort());
+
+      const controller: HookController = {
+        signal: handlerAbort.signal,
+        intervene(decision: HookDecision) {
+          if (handlerAbort.signal.aborted) {
+            return; // intervention window closed
+          }
+          const merged = currentDecision ? mergeHookDecisions(currentDecision, decision) : decision;
+          if (merged !== currentDecision) {
+            currentDecision = merged;
+            interventionCallback(merged, handler.pluginId);
+          }
+        },
+      };
+
+      // Fire and forget — but with timeout
+      const run = async () => {
+        try {
+          await (handler.handler as Function)(event, ctx, controller);
+        } catch (err) {
+          logger?.warn?.(
+            `[hooks] async ${hookName} handler from ${handler.pluginId} failed: ${String(err)}`,
+          );
+        }
+      };
+
+      const timer = setTimeout(() => handlerAbort.abort(), timeoutMs);
+      void run().finally(() => clearTimeout(timer));
+    }
+
+    return () => abortController.abort();
   }
 
   return {
@@ -1118,6 +1261,9 @@ export function createHookRunner(
     runBeforeCompaction,
     runAfterCompaction,
     runBeforeReset,
+    // Lifecycle gate hooks
+    runBeforeAgentRun,
+    fireAsync: fireAsyncHandlers,
     // Message hooks
     runInboundClaim,
     runInboundClaimForPlugin,
@@ -1147,6 +1293,7 @@ export function createHookRunner(
     runBeforeInstall,
     // Utility
     hasHooks,
+    hasAsyncHooks,
     getHookCount,
   };
 }

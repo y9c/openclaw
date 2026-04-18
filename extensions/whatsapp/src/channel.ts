@@ -34,6 +34,7 @@ import {
   normalizeWhatsAppTarget,
 } from "./normalize.js";
 import { getWhatsAppRuntime } from "./runtime.js";
+import { resolveWhatsAppSessionConversation } from "./session-conversation.js";
 import { resolveWhatsAppOutboundSessionRoute } from "./session-route.js";
 import { whatsappSetupAdapter } from "./setup-core.js";
 import {
@@ -103,6 +104,8 @@ export const whatsappPlugin: ChannelPlugin<ResolvedWhatsAppAccount> =
       },
       messaging: {
         normalizeTarget: normalizeWhatsAppMessagingTarget,
+        resolveSessionConversation: ({ kind, rawId }) =>
+          resolveWhatsAppSessionConversation({ kind, rawId }),
         resolveOutboundSessionRoute: (params) => resolveWhatsAppOutboundSessionRoute(params),
         parseExplicitTarget: ({ raw }) => parseWhatsAppExplicitTarget(raw),
         inferTargetChatType: ({ to }) => parseWhatsAppExplicitTarget(to)?.chatType,

@@ -20,4 +20,11 @@ describe("session reset thread detection", () => {
     expect(isThreadSessionKey(sessionKey)).toBe(true);
     expect(resolveSessionResetType({ sessionKey })).toBe("thread");
   });
+
+  it("keeps WhatsApp account-scoped group sessions on the group reset type", () => {
+    const sessionKey =
+      "agent:main:whatsapp:group:120363407398133622@g.us:thread:whatsapp-account-work";
+    expect(isThreadSessionKey(sessionKey)).toBe(false);
+    expect(resolveSessionResetType({ sessionKey })).toBe("group");
+  });
 });

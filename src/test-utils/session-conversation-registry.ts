@@ -49,6 +49,21 @@ function resolveFeishuSessionConversation(params: { kind: "group" | "channel"; r
   };
 }
 
+function resolveWhatsAppSessionConversation(params: { kind: "group" | "channel"; rawId: string }) {
+  if (params.kind !== "group") {
+    return null;
+  }
+  const match = params.rawId.match(/^(?<groupId>.+):thread:whatsapp-account-(?<accountId>[^:]+)$/u);
+  if (!match?.groups?.groupId || !match.groups.accountId) {
+    return null;
+  }
+  return {
+    id: match.groups.groupId,
+    baseConversationId: match.groups.groupId,
+    parentConversationCandidates: [match.groups.groupId],
+  };
+}
+
 export function createSessionConversationTestRegistry() {
   return createTestRegistry([
     {
@@ -113,6 +128,29 @@ export function createSessionConversationTestRegistry() {
         messaging: {
           resolveSessionConversation: resolveGenericSessionConversation,
           resolveSessionTarget: ({ id }: { id: string }) => `channel:${id}`,
+        },
+        config: {
+          listAccountIds: () => ["default"],
+          resolveAccount: () => ({}),
+        },
+      },
+    },
+    {
+      pluginId: "whatsapp",
+      source: "test",
+      plugin: {
+        id: "whatsapp",
+        meta: {
+          id: "whatsapp",
+          label: "WhatsApp",
+          selectionLabel: "WhatsApp",
+          docsPath: "/channels/whatsapp",
+          blurb: "WhatsApp test stub.",
+        },
+        capabilities: { chatTypes: ["direct", "group"] },
+        messaging: {
+          normalizeTarget: (raw: string) => raw.replace(/^group:/, ""),
+          resolveSessionConversation: resolveWhatsAppSessionConversation,
         },
         config: {
           listAccountIds: () => ["default"],

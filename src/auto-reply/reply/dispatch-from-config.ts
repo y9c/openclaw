@@ -52,6 +52,7 @@ import {
   shouldAttemptTtsPayload,
 } from "../../tts/tts-config.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
+import { shouldHandleTextCommands } from "../commands-text-routing.js";
 import type { BlockReplyContext } from "../get-reply-options.types.js";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../reply-payload.js";
 import type { FinalizedMsgContext } from "../templating.js";
@@ -68,6 +69,7 @@ import type {
   DispatchFromConfigResult,
 } from "./dispatch-from-config.types.js";
 import { claimInboundDedupe, commitInboundDedupe, releaseInboundDedupe } from "./inbound-dedupe.js";
+import { resolveInboundReplyAdmission } from "./inbound-reply-admission.js";
 import { resolveReplyRoutingDecision } from "./routing-policy.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
 
@@ -879,6 +881,27 @@ export async function dispatchReplyFromConfig(
       originatingChannel,
       systemEvent: shouldRouteToOriginating,
     });
+    const commandAuthorized = ctx.CommandAuthorized;
+    const inboundAdmission = resolveInboundReplyAdmission({
+      ctx,
+      cfg,
+      sendPolicy,
+      allowTextCommands: shouldHandleTextCommands({
+        cfg,
+        surface: normalizeLowercaseStringOrEmpty(ctx.Surface ?? ctx.Provider),
+        commandSource: ctx.CommandSource,
+      }),
+      commandAuthorized,
+      agentId: sessionAgentId,
+      includeDisabledCommands: true,
+    });
+    if (
+      params.replyOptions?.earlyTyping?.start === "accepted_inbound" &&
+      !typing.suppressTyping &&
+      inboundAdmission.shouldStartEarlyTyping
+    ) {
+      await params.replyOptions.earlyTyping.controller?.startTypingLoop();
+    }
 
     const replyResolver =
       params.replyResolver ?? (await loadGetReplyFromConfigRuntime()).getReplyFromConfig;

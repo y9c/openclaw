@@ -22,7 +22,6 @@ import {
 } from "../../routing/session-key.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import { isReasoningTagProvider } from "../../utils/provider-utils.js";
-import { hasControlCommand } from "../command-detection.js";
 import { resolveEnvelopeFormatOptions } from "../envelope.js";
 import type { MsgContext, TemplateContext } from "../templating.js";
 import {
@@ -55,6 +54,7 @@ import { buildSessionStartupContextPrelude, shouldApplyStartupContext } from "./
 import { resolveTypingMode } from "./typing-mode.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
 import type { TypingController } from "./typing.js";
+import { isSilentUnauthorizedWholeMessageControlCommand } from "./unauthorized-control-command.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
 type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
@@ -308,15 +308,16 @@ export async function runPreparedReply(
   const rawBodyTrimmed = (ctx.CommandBody ?? ctx.RawBody ?? ctx.Body ?? "").trim();
   const baseBodyTrimmedRaw = baseBody.trim();
   const normalizedCommandBody = command.commandBodyNormalized.trim();
-  const isWholeMessageCommand =
-    normalizedCommandBody === rawBodyTrimmed ||
-    normalizedCommandBody === rawBodyTrimmed.toLowerCase();
-  const isResetOrNewCommand = /^\/(new|reset)(?:\s|$)/.test(normalizedCommandBody);
   if (
-    allowTextCommands &&
-    (!commandAuthorized || !command.isAuthorizedSender) &&
-    isWholeMessageCommand &&
-    (hasControlCommand(rawBodyTrimmed, cfg) || isResetOrNewCommand)
+    isSilentUnauthorizedWholeMessageControlCommand({
+      ctx,
+      cfg,
+      allowTextCommands,
+      commandAuthorized,
+      agentId,
+      commandBodyNormalized: normalizedCommandBody,
+      isAuthorizedSender: command.isAuthorizedSender,
+    })
   ) {
     typing.cleanup();
     return undefined;

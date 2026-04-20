@@ -834,6 +834,116 @@ describe("dispatchReplyFromConfig", () => {
     await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
   });
 
+  it("starts eager typing before reply resolution when allowed", async () => {
+    setNoAbort();
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const startTypingLoop = vi.fn(async () => undefined);
+    const ctx = buildTestCtx({
+      Provider: "whatsapp",
+      OriginatingChannel: "whatsapp",
+      OriginatingTo: "+15550001111",
+    });
+
+    const replyResolver = async (_ctx: MsgContext) => {
+      expect(startTypingLoop).toHaveBeenCalledTimes(1);
+      return { text: "hi" } satisfies ReplyPayload;
+    };
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg,
+      dispatcher,
+      replyResolver,
+      replyOptions: {
+        earlyTyping: {
+          start: "accepted_inbound",
+          controller: {
+            startTypingLoop,
+          } as never,
+        },
+      } as GetReplyOptions,
+    });
+  });
+
+  it("does not start eager typing for silent unauthorized whole-message commands", async () => {
+    setNoAbort();
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const startTypingLoop = vi.fn(async () => undefined);
+    const replyResolver = vi.fn(async () => undefined);
+    const ctx = buildTestCtx({
+      Provider: "whatsapp",
+      Surface: "whatsapp",
+      ChatType: "direct",
+      CommandAuthorized: false,
+      CommandBody: "/reset",
+      RawBody: "/reset",
+      Body: "/reset",
+      OriginatingChannel: "whatsapp",
+      OriginatingTo: "+15550001111",
+    });
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg,
+      dispatcher,
+      replyResolver,
+      replyOptions: {
+        earlyTyping: {
+          start: "accepted_inbound",
+          controller: {
+            startTypingLoop,
+          } as never,
+        },
+      } as GetReplyOptions,
+    });
+
+    expect(replyResolver).toHaveBeenCalledTimes(1);
+    expect(startTypingLoop).not.toHaveBeenCalled();
+  });
+
+  it("does not start eager typing for disabled privileged commands from unauthorized senders", async () => {
+    setNoAbort();
+    const dispatcher = createDispatcher();
+    const startTypingLoop = vi.fn(async () => undefined);
+    const replyResolver = vi.fn(async () => undefined);
+    const ctx = buildTestCtx({
+      Provider: "whatsapp",
+      Surface: "whatsapp",
+      ChatType: "direct",
+      CommandAuthorized: false,
+      CommandBody: "/config show",
+      RawBody: "/config show",
+      Body: "/config show",
+      OriginatingChannel: "whatsapp",
+      OriginatingTo: "+15550001111",
+    });
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg: {
+        commands: {
+          config: false,
+          text: true,
+        },
+      } as OpenClawConfig,
+      dispatcher,
+      replyResolver,
+      replyOptions: {
+        earlyTyping: {
+          start: "accepted_inbound",
+          controller: {
+            startTypingLoop,
+          } as never,
+        },
+      } as GetReplyOptions,
+    });
+
+    expect(replyResolver).toHaveBeenCalledTimes(1);
+    expect(startTypingLoop).not.toHaveBeenCalled();
+  });
+
   it("routes when provider is webchat but surface carries originating channel metadata", async () => {
     setNoAbort();
     mocks.routeReply.mockClear();
@@ -3193,6 +3303,37 @@ describe("sendPolicy deny — suppress delivery, not processing (#53328)", () =>
     // Delivery MUST be suppressed
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
     expect(result.queuedFinal).toBe(false);
+  });
+
+  it("does not start eager typing when sendPolicy is deny", async () => {
+    setNoAbort();
+    sessionStoreMocks.currentEntry = {
+      sessionId: "s1",
+      updatedAt: 0,
+      sendPolicy: "deny",
+    };
+    const dispatcher = createDispatcher();
+    const startTypingLoop = vi.fn(async () => undefined);
+    const replyResolver = vi.fn(async () => ({ text: "agent reply" }) satisfies ReplyPayload);
+    const ctx = buildTestCtx({ SessionKey: "test:session" });
+
+    await dispatchReplyFromConfig({
+      ctx,
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver,
+      replyOptions: {
+        earlyTyping: {
+          start: "accepted_inbound",
+          controller: {
+            startTypingLoop,
+          } as never,
+        },
+      } as GetReplyOptions,
+    });
+
+    expect(replyResolver).toHaveBeenCalledTimes(1);
+    expect(startTypingLoop).not.toHaveBeenCalled();
   });
 
   it("suppresses tool result delivery when sendPolicy is deny", async () => {

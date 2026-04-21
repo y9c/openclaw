@@ -95,9 +95,8 @@ export default definePluginEntry({
           `sessionKey=${ctx.sessionKey ?? "none"} runId=${ctx.runId ?? "none"}`,
       );
 
-      // Check the original prompt stored in context for triggers
-      const prompt = (ctx as Record<string, unknown>).prompt as string | undefined;
-      const combined = `${prompt ?? ""} ${textPreview}`;
+      // Check the original prompt for triggers (prompt is on the event since it produced this output)
+      const combined = `${event.prompt ?? ""} ${textPreview}`;
 
       if (hasTrigger(combined, "HOOK_BLOCK_OUTPUT")) {
         log.info(`[${PLUGIN_ID}] llm_output → BLOCKING (trigger: HOOK_BLOCK_OUTPUT)`);
@@ -139,9 +138,8 @@ export default definePluginEntry({
     api.on(
       "llm_output",
       async (event, ctx, controller) => {
-        const prompt = (ctx as Record<string, unknown>).prompt as string | undefined;
         const textPreview = (event.assistantTexts ?? []).join(" ").slice(0, 120);
-        const combined = `${prompt ?? ""} ${textPreview}`;
+        const combined = `${event.prompt ?? ""} ${textPreview}`;
 
         log.info(`[${PLUGIN_ID}] async llm_output started`);
 

@@ -180,6 +180,8 @@ export type PluginHookLlmOutputEvent = {
   sessionId: string;
   provider: string;
   model: string;
+  /** The original user prompt that produced this output. */
+  prompt?: string;
   assistantTexts: string[];
   lastAssistant?: unknown;
   usage?: {

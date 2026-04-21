@@ -550,6 +550,48 @@ describe("runGatewayLoop", () => {
     });
   });
 
+  it("does not promote an invalid effective config snapshot even after healthy readiness", async () => {
+    vi.clearAllMocks();
+    const invalidSnapshot = {
+      path: "/tmp/openclaw.json",
+      raw: '{ gateway: { mode: "local" } }\n',
+      hash: "hash-invalid",
+      valid: false,
+    };
+    const lastKnownGood = {
+      path: "/tmp/openclaw.json",
+      raw: '{ gateway: { mode: "loopback" } }\n',
+      hash: "hash-good",
+      valid: true,
+    };
+    readConfigFileSnapshot.mockResolvedValue(invalidSnapshot);
+    readEffectiveConfigLastKnownGood.mockResolvedValue(lastKnownGood);
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const close = vi.fn(async () => {});
+      const { runtime, exited } = createRuntimeWithExitSignal();
+      const start = vi.fn().mockResolvedValue({
+        close,
+        getReadiness: () => ({ ready: true, failing: [], uptimeMs: 25 }),
+      });
+      const { runGatewayLoop } = await import("./run-loop.js");
+      void runGatewayLoop({
+        start: start as unknown as Parameters<typeof runGatewayLoop>[0]["start"],
+        runtime: runtime as unknown as Parameters<typeof runGatewayLoop>[0]["runtime"],
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      const sigterm = captureSignal("SIGTERM");
+      sigterm();
+
+      await expect(exited).resolves.toBe(0);
+      expect(persistEffectiveConfigLastKnownGood).not.toHaveBeenCalled();
+      expect(gatewayLog.warn).toHaveBeenCalledWith(
+        "gateway started healthy but effective config snapshot at /tmp/openclaw.json was invalid; preserving existing last-known-good config",
+      );
+    });
+  });
+
   it("restores last-known-good only after an invalid effective config startup failure", async () => {
     vi.clearAllMocks();
     const badSnapshot = {
@@ -645,7 +687,7 @@ describe("runGatewayLoop", () => {
 
   it("restarts cleanly when SIGUSR1 arrives during readiness polling", async () => {
     vi.clearAllMocks();
-    vi.useFakeTimers();
+    vi.useRealTimers();
     const snapshot = {
       path: "/tmp/openclaw.json",
       raw: '{ gateway: { mode: "local" } }\n',
@@ -696,8 +738,9 @@ describe("runGatewayLoop", () => {
       const sigterm = captureSignal("SIGTERM");
 
       sigusr1();
-      await vi.advanceTimersByTimeAsync(300);
+      await new Promise<void>((resolve) => setTimeout(resolve, 300));
       await startedSecond;
+      await new Promise<void>((resolve) => setImmediate(resolve));
 
       expect(start).toHaveBeenCalledTimes(2);
       expect(closeFirst).toHaveBeenCalledWith({
@@ -707,6 +750,51 @@ describe("runGatewayLoop", () => {
 
       sigterm();
       await expect(exited).resolves.toBe(0);
+    });
+  });
+
+  it("exits promptly on SIGTERM even if startup is still pending", async () => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
+
+    await withIsolatedSignals(async ({ captureSignal }) => {
+      const { runtime, exited } = createRuntimeWithExitSignal();
+      let resolveStart: (() => void) | null = null;
+      const startSettled = new Promise<void>((resolve) => {
+        resolveStart = resolve;
+      });
+      const start = vi.fn(
+        () =>
+          new Promise<{
+            close: (opts: { reason: string; restartExpectedMs: number | null }) => Promise<void>;
+          }>((resolve) => {
+            resolveStart = () => {
+              resolve({
+                close: vi.fn(async () => {}),
+              });
+            };
+          }),
+      );
+
+      const { runGatewayLoop } = await import("./run-loop.js");
+      void runGatewayLoop({
+        start: start as unknown as Parameters<typeof runGatewayLoop>[0]["start"],
+        runtime: runtime as unknown as Parameters<typeof runGatewayLoop>[0]["runtime"],
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      const sigterm = captureSignal("SIGTERM");
+      sigterm();
+
+      await expect(exited).resolves.toBe(0);
+      expect(runtime.exit).toHaveBeenCalledWith(0);
+      expect(resolveStart).not.toBeNull();
+      await Promise.race([
+        startSettled.then(() => {
+          throw new Error("startup promise unexpectedly settled");
+        }),
+        new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      ]);
     });
   });
 });

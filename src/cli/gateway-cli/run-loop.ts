@@ -39,6 +39,7 @@ const LAUNCHD_SUPERVISED_RESTART_EXIT_DELAY_MS = 1500;
 const DEFAULT_RESTART_DRAIN_TIMEOUT_MS = 300_000;
 const CONFIG_RECOVERY_READINESS_TIMEOUT_MS = 15_000;
 const CONFIG_RECOVERY_READINESS_POLL_MS = 250;
+const STARTUP_SHUTDOWN_GRACE_MS = 100;
 const CONFIG_AUTO_RECOVERY_MESSAGE =
   "Gateway recovered automatically after a failed config change and restored the last known good configuration.";
 
@@ -133,8 +134,6 @@ export async function runGatewayLoop(params: {
     if (hadLock && !(await reacquireLockForInProcessRestart())) {
       return;
     }
-    shuttingDown = false;
-    pendingSignalAction = null;
     restartResolver?.();
   };
   const handleStopAfterServerClose = async () => {
@@ -302,12 +301,16 @@ export async function runGatewayLoop(params: {
           }
         }
 
-        const startingServer = startingServerPromise
-          ? await startingServerPromise.catch(
-              () => null as Awaited<ReturnType<typeof startGatewayServer>> | null,
-            )
-          : null;
-        const activeServer = server ?? startingServer;
+        const activeServer =
+          server ??
+          (startingServerPromise
+            ? await Promise.race([
+                startingServerPromise.catch(
+                  () => null as Awaited<ReturnType<typeof startGatewayServer>> | null,
+                ),
+                waitFor(STARTUP_SHUTDOWN_GRACE_MS).then(() => null),
+              ])
+            : null);
         server = activeServer;
         await activeServer?.close({
           reason: isRestart ? "gateway restarting" : "gateway stopping",
@@ -396,6 +399,8 @@ export async function runGatewayLoop(params: {
         const readiness = await waitForServerReadiness(server);
         if (readiness.status === "aborted") {
           await restartRequested;
+          shuttingDown = false;
+          pendingSignalAction = null;
           continue;
         }
         if (readiness.status === "timeout") {
@@ -409,13 +414,17 @@ export async function runGatewayLoop(params: {
         );
         const healthyHash = healthySnapshot ? resolveConfigSnapshotHash(healthySnapshot) : null;
         const shouldPromoteLastKnownGood =
-          healthySnapshot &&
+          healthySnapshot?.valid === true &&
           readiness.status === "ready" &&
           (healthyHash === null || !lastKnownGood || healthyHash !== lastKnownGood.hash);
         if (shouldPromoteLastKnownGood) {
           await persistEffectiveConfigLastKnownGood(healthySnapshot).catch((err) => {
             gatewayLog.warn(`failed to persist last-known-good config snapshot: ${String(err)}`);
           });
+        } else if (readiness.status === "ready" && healthySnapshot && !healthySnapshot.valid) {
+          gatewayLog.warn(
+            `gateway started healthy but effective config snapshot at ${healthyConfigPath} was invalid; preserving existing last-known-good config`,
+          );
         } else if (!lastKnownGood && !healthySnapshot) {
           gatewayLog.warn(
             `gateway started healthy but could not snapshot effective config at ${healthyConfigPath}`,

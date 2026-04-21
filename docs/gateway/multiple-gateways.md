@@ -20,26 +20,31 @@ Most setups should use one Gateway because a single Gateway can handle multiple 
 
 If these are shared, you will hit config races and port conflicts.
 
-## Recommended: profiles (`--profile`)
+## Recommended: use the default profile for main, a named profile for rescue
 
-Profiles auto-scope `OPENCLAW_STATE_DIR` + `OPENCLAW_CONFIG_PATH` and suffix service names.
+Profiles auto-scope `OPENCLAW_STATE_DIR` + `OPENCLAW_CONFIG_PATH` and suffix service names. For
+most rescue-bot setups, keep the main bot on the default profile and give only
+the rescue bot a named profile such as `rescue`.
 
 ```bash
-# main
-openclaw --profile main setup
-openclaw --profile main gateway --port 18789
+# main (default profile)
+openclaw setup
+openclaw gateway --port 18789
 
 # rescue
 openclaw --profile rescue setup
 openclaw --profile rescue gateway --port 19001
 ```
 
-Per-profile services:
+Services:
 
 ```bash
-openclaw --profile main gateway install
+openclaw gateway install
 openclaw --profile rescue gateway install
 ```
+
+If you want both Gateways to use named profiles, that also works, but it is not
+required.
 
 ## Rescue-bot guide
 
@@ -54,25 +59,73 @@ This keeps the rescue bot isolated from the main bot so it can debug or apply co
 
 Port spacing: leave at least 20 ports between base ports so the derived browser/canvas/CDP ports never collide.
 
-### How to install (rescue bot)
+### Recommended rescue channel/account
+
+For most setups, use a completely separate Telegram bot for the rescue profile.
+
+Why Telegram:
+
+- easy to keep operator-only
+- separate bot token and identity
+- independent from the main bot's channel/app install
+- simple DM-based recovery path when the main bot is broken
+
+The important part is full independence: separate bot account, separate
+credentials, separate OpenClaw profile, separate workspace, and separate port.
+
+### How rescue-bot onboarding works
+
+`openclaw --profile rescue onboard` uses the normal onboarding flow, but it
+writes everything into a separate profile.
+
+In practice, that means the rescue bot gets its own:
+
+- config file
+- state directory
+- workspace (by default `~/.openclaw/workspace-rescue`)
+- managed service name
+
+The prompts are otherwise the same as normal onboarding. The two important
+choices are:
+
+- pick a different Gateway base port than the main bot
+- keep the rescue bot on its own profile instead of pointing it at the main
+  bot's config or workspace
+
+### Recommended install flow
 
 ```bash
-# Main bot (existing or fresh, without --profile param)
-# Runs on port 18789 + Chrome CDC/Canvas/... Ports
+# Main bot (default profile)
 openclaw onboard
 openclaw gateway install
 
-# Rescue bot (isolated profile + ports)
+# Rescue bot (separate profile)
 openclaw --profile rescue onboard
-# Notes:
-# - workspace name will be postfixed with -rescue per default
-# - Port should be at least 18789 + 20 Ports,
-#   better choose completely different base port, like 19789,
-# - rest of the onboarding is the same as normal
-
-# To install the service (if not happened automatically during setup)
 openclaw --profile rescue gateway install
 ```
+
+During rescue-bot onboarding:
+
+- leave the profile as `rescue`
+- choose a base port at least 20 higher than the main bot's port
+- expect the default workspace name to gain a `-rescue` suffix
+- use a separate Telegram bot token for the rescue account
+- follow the rest of onboarding as usual for auth, channels, and model setup
+
+Example:
+
+```bash
+# Main bot on 18789
+openclaw onboard
+openclaw gateway install
+
+# Rescue bot on 19001
+openclaw --profile rescue onboard
+openclaw --profile rescue gateway install
+```
+
+If onboarding already installed the rescue service for you, the final
+`gateway install` is not needed.
 
 ## Port mapping (derived)
 
@@ -95,7 +148,7 @@ If you override any of these in config or env, you must keep them unique per ins
 
 ```bash
 OPENCLAW_CONFIG_PATH=~/.openclaw/main.json \
-OPENCLAW_STATE_DIR=~/.openclaw-main \
+OPENCLAW_STATE_DIR=~/.openclaw \
 openclaw gateway --port 18789
 
 OPENCLAW_CONFIG_PATH=~/.openclaw/rescue.json \
@@ -106,10 +159,10 @@ openclaw gateway --port 19001
 ## Quick checks
 
 ```bash
-openclaw --profile main gateway status --deep
+openclaw gateway status --deep
 openclaw --profile rescue gateway status --deep
 openclaw --profile rescue gateway probe
-openclaw --profile main status
+openclaw status
 openclaw --profile rescue status
 openclaw --profile rescue browser status
 ```

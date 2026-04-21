@@ -10,6 +10,7 @@ import { concatOptionalTextSegments } from "../shared/text/join-segments.js";
 import {
   type HookDecision,
   type HookController,
+  type GateHookResult,
   isHookDecision,
   mergeHookDecisions,
 } from "./hook-decision-types.js";
@@ -614,18 +615,25 @@ export function createHookRunner(
   async function runLlmOutput(
     event: PluginHookLlmOutputEvent,
     ctx: PluginHookAgentContext,
-  ): Promise<HookDecision | undefined> {
-    return runModifyingHook<"llm_output", HookDecision>("llm_output", event, ctx, {
-      mergeResults: (_acc, next) => {
+  ): Promise<GateHookResult | undefined> {
+    let winningPluginId: string | undefined;
+    const decision = await runModifyingHook<"llm_output", HookDecision>("llm_output", event, ctx, {
+      mergeResults: (_acc, next, reg) => {
         if (!isHookDecision(next)) {
           return _acc ?? next;
         }
-        return mergeHookDecisions(_acc, next);
+        const merged = mergeHookDecisions(_acc, next);
+        if (merged === next) {
+          winningPluginId = reg.pluginId;
+        }
+        return merged;
       },
       // ask does NOT short-circuit — keep running so other plugins can escalate to block/redact
       shouldStop: (result) => result.outcome === "redact" || result.outcome === "block",
       terminalLabel: "gate-decision",
     });
+    if (!decision) return undefined;
+    return { decision, pluginId: winningPluginId ?? "unknown" };
   }
 
   /**
@@ -803,9 +811,10 @@ export function createHookRunner(
   async function runBeforeAgentRun(
     event: PluginHookBeforeAgentRunEvent,
     ctx: PluginHookAgentContext,
-  ): Promise<HookDecision | undefined> {
-    return runModifyingHook<"before_agent_run", HookDecision>("before_agent_run", event, ctx, {
-      mergeResults: (_acc, next) => {
+  ): Promise<GateHookResult | undefined> {
+    let winningPluginId: string | undefined;
+    const decision = await runModifyingHook<"before_agent_run", HookDecision>("before_agent_run", event, ctx, {
+      mergeResults: (_acc, next, reg) => {
         if (!isHookDecision(next)) {
           return _acc ?? next;
         }
@@ -821,12 +830,18 @@ export function createHookRunner(
             category: redactDecision.category,
           };
         }
-        return mergeHookDecisions(_acc, next);
+        const merged = mergeHookDecisions(_acc, next);
+        if (merged === next) {
+          winningPluginId = reg.pluginId;
+        }
+        return merged;
       },
       // ask does NOT short-circuit — keep running so other plugins can escalate to block
       shouldStop: (result) => result.outcome === "block",
       terminalLabel: "gate-decision",
     });
+    if (!decision) return undefined;
+    return { decision, pluginId: winningPluginId ?? "unknown" };
   }
 
   // Tool Hooks

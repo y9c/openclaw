@@ -49,7 +49,7 @@ describe("hook-echo integration", () => {
         },
         ctx,
       );
-      expect(result?.outcome).toBe("pass");
+      expect(result?.decision.outcome).toBe("pass");
     });
 
     it("returns block from a sync llm_output handler", async () => {
@@ -75,7 +75,7 @@ describe("hook-echo integration", () => {
         },
         ctx,
       );
-      expect(result?.outcome).toBe("block");
+      expect(result?.decision.outcome).toBe("block");
     });
   });
 
@@ -152,7 +152,7 @@ describe("hook-echo integration", () => {
 
       // The sync path should return immediately without waiting for async
       const result = await runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
-      expect(result?.outcome).toBe("pass");
+      expect(result?.decision.outcome).toBe("pass");
       // Async handler should NOT have completed yet
       expect(asyncHandlerCompleted).toBe(false);
     });

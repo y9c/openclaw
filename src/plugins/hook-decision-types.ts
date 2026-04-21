@@ -132,6 +132,16 @@ export type InputGateDecision = HookDecisionPass | HookDecisionBlock | HookDecis
 /** Outcomes valid for output gates (llm_output, after_tool_call). */
 export type OutputGateDecision = HookDecision; // all four are valid
 
+/**
+ * A gate hook decision paired with the pluginId that produced it.
+ * Returned by `runBeforeAgentRun` and `runLlmOutput` so callers can
+ * attribute approval requests and audit entries to the originating plugin.
+ */
+export type GateHookResult = {
+  decision: HookDecision;
+  pluginId: string;
+};
+
 // ---------------------------------------------------------------------------
 // Hook Decision Event (observability)
 // ---------------------------------------------------------------------------

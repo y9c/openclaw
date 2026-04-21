@@ -1931,7 +1931,7 @@ export async function runEmbeddedAttempt(
 
           // Run before_agent_run gate hook (sync path)
           if (hookRunner?.hasHooks("before_agent_run")) {
-            const beforeRunDecision = await hookRunner.runBeforeAgentRun(
+            const beforeRunResult = await hookRunner.runBeforeAgentRun(
               {
                 prompt: effectivePrompt,
                 messages: activeSession.messages,
@@ -1949,20 +1949,22 @@ export async function runEmbeddedAttempt(
                 channelId: params.messageChannel ?? params.messageProvider ?? undefined,
               },
             );
-            if (beforeRunDecision?.outcome === "block") {
-              log.warn(`before_agent_run hook blocked: ${beforeRunDecision.reason}`);
+            if (beforeRunResult) {
+            const { decision: beforeRunDecision, pluginId: beforeRunPluginId } = beforeRunResult;
+            if (beforeRunDecision.outcome === "block") {
+              log.warn(`before_agent_run hook blocked by ${beforeRunPluginId}: ${beforeRunDecision.reason}`);
               promptError = new Error(
                 beforeRunDecision.userMessage ?? "Request blocked by policy.",
               );
               promptErrorSource = "hook:before_agent_run";
               skipPromptSubmission = true;
-            } else if (beforeRunDecision?.outcome === "ask") {
-              log.warn(`before_agent_run hook requesting approval: ${beforeRunDecision.reason}`);
+            } else if (beforeRunDecision.outcome === "ask") {
+              log.warn(`before_agent_run hook requesting approval (${beforeRunPluginId}): ${beforeRunDecision.reason}`);
               const { requestHookApproval } = await import("../../../plugins/hook-approval.js");
               const approvalResult = await requestHookApproval({
                 hookPoint: "before_agent_run",
                 decision: beforeRunDecision,
-                pluginId: undefined,
+                pluginId: beforeRunPluginId,
                 runId: params.runId,
                 sessionKey: params.sessionKey,
                 agentId: hookAgentId,
@@ -1990,6 +1992,7 @@ export async function runEmbeddedAttempt(
               } else {
                 log.debug(`before_agent_run hook approval granted (${approvalResult}), proceeding`);
               }
+            }
             }
           }
 
@@ -2487,7 +2490,7 @@ export async function runEmbeddedAttempt(
       }
 
       if (hookRunner?.hasHooks("llm_output")) {
-        const llmOutputDecision = await hookRunner.runLlmOutput(
+        const llmOutputResult = await hookRunner.runLlmOutput(
           {
             runId: params.runId,
             sessionId: params.sessionId,
@@ -2509,6 +2512,8 @@ export async function runEmbeddedAttempt(
             channelId: params.messageChannel ?? params.messageProvider ?? undefined,
           },
         );
+        const llmOutputDecision = llmOutputResult?.decision;
+        const llmOutputPluginId = llmOutputResult?.pluginId ?? "unknown";
         // Helper: redact assistant messages from the transcript and clear assistantTexts
         const redactLlmOutputResponse = async (
           reason: string,
@@ -2527,7 +2532,7 @@ export async function runEmbeddedAttempt(
             {
               reason,
               hookPoint,
-              pluginId: "unknown",
+              pluginId: llmOutputPluginId,
               timestamp: Date.now(),
             },
           );
@@ -2538,24 +2543,24 @@ export async function runEmbeddedAttempt(
         };
 
         if (llmOutputDecision?.outcome === "block") {
-          log.warn(`llm_output hook blocked: ${llmOutputDecision.reason}`);
+          log.warn(`llm_output hook blocked by ${llmOutputPluginId}: ${llmOutputDecision.reason}`);
           await redactLlmOutputResponse(llmOutputDecision.reason, "llm_output");
           promptError = new Error(llmOutputDecision.userMessage ?? "Response blocked by policy.");
           promptErrorSource = "hook:llm_output";
         } else if (llmOutputDecision?.outcome === "redact") {
-          log.warn(`llm_output hook redacted: ${llmOutputDecision.reason}`);
+          log.warn(`llm_output hook redacted by ${llmOutputPluginId}: ${llmOutputDecision.reason}`);
           await redactLlmOutputResponse(
             llmOutputDecision.reason,
             "llm_output",
             llmOutputDecision.replacementMessage,
           );
         } else if (llmOutputDecision?.outcome === "ask") {
-          log.warn(`llm_output hook requesting approval: ${llmOutputDecision.reason}`);
+          log.warn(`llm_output hook requesting approval (${llmOutputPluginId}): ${llmOutputDecision.reason}`);
           const { requestHookApproval } = await import("../../../plugins/hook-approval.js");
           const approvalResult = await requestHookApproval({
             hookPoint: "llm_output",
             decision: llmOutputDecision,
-            pluginId: undefined,
+            pluginId: llmOutputPluginId,
             runId: params.runId,
             sessionKey: params.sessionKey,
             agentId: hookAgentId,

@@ -36,7 +36,8 @@ describe("before_agent_run hook", () => {
     ]);
     const runner = createHookRunner(registry);
     const result = await runner.runBeforeAgentRun({ prompt: "hello", messages: [] }, ctx);
-    expect(result).toEqual({ outcome: "pass" });
+    expect(result?.decision).toEqual({ outcome: "pass" });
+    expect(result?.pluginId).toBe("test");
   });
 
   it("returns block when handler returns block", async () => {
@@ -55,10 +56,10 @@ describe("before_agent_run hook", () => {
     ]);
     const runner = createHookRunner(registry);
     const result = await runner.runBeforeAgentRun({ prompt: "bad stuff", messages: [] }, ctx);
-    expect(result?.outcome).toBe("block");
-    if (result?.outcome === "block") {
-      expect(result.reason).toBe("unsafe content");
-      expect(result.userMessage).toBe("I can't process that.");
+    expect(result?.decision.outcome).toBe("block");
+    if (result?.decision.outcome === "block") {
+      expect(result.decision.reason).toBe("unsafe content");
+      expect(result.decision.userMessage).toBe("I can't process that.");
     }
   });
 
@@ -84,7 +85,8 @@ describe("before_agent_run hook", () => {
     ]);
     const runner = createHookRunner(registry);
     const result = await runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
-    expect(result?.outcome).toBe("block");
+    expect(result?.decision.outcome).toBe("block");
+    expect(result?.pluginId).toBe("plugin-b");
   });
 
   it("short-circuits on block (skips remaining handlers)", async () => {
@@ -180,10 +182,11 @@ describe("before_agent_run ask outcome", () => {
     ]);
     const runner = createHookRunner(registry);
     const result = await runner.runBeforeAgentRun({ prompt: "hello", messages: [] }, ctx);
-    expect(result?.outcome).toBe("ask");
-    if (result?.outcome === "ask") {
-      expect(result.reason).toBe("needs approval");
-      expect(result.title).toBe("Review Required");
+    expect(result?.decision.outcome).toBe("ask");
+    expect(result?.pluginId).toBe("test");
+    if (result?.decision.outcome === "ask") {
+      expect(result.decision.reason).toBe("needs approval");
+      expect(result.decision.title).toBe("Review Required");
     }
   });
 
@@ -245,7 +248,8 @@ describe("before_agent_run ask outcome", () => {
     ]);
     const runner = createHookRunner(registry);
     const result = await runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
-    expect(result?.outcome).toBe("block");
+    expect(result?.decision.outcome).toBe("block");
+    expect(result?.pluginId).toBe("plugin-b");
   });
 });
 
@@ -275,7 +279,8 @@ describe("llm_output ask outcome", () => {
       },
       ctx,
     );
-    expect(result?.outcome).toBe("ask");
+    expect(result?.decision.outcome).toBe("ask");
+    expect(result?.pluginId).toBe("test");
   });
 
   it("ask does NOT short-circuit for llm_output — next handler still runs", async () => {
@@ -355,7 +360,8 @@ describe("llm_output ask outcome", () => {
       },
       ctx,
     );
-    expect(result?.outcome).toBe("redact");
+    expect(result?.decision.outcome).toBe("redact");
+    expect(result?.pluginId).toBe("plugin-b");
   });
 });
 
@@ -376,7 +382,7 @@ describe("before_agent_run redact guard", () => {
       logger: { warn: () => {}, error: () => {} },
     });
     const result = await runner.runBeforeAgentRun({ prompt: "test", messages: [] }, ctx);
-    expect(result?.outcome).toBe("block");
+    expect(result?.decision.outcome).toBe("block");
   });
 });
 

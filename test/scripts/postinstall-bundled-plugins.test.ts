@@ -151,7 +151,7 @@ describe("bundled plugin postinstall", () => {
     });
   });
 
-  it("does not install bundled plugin deps outside of source checkouts by default", async () => {
+  it("installs bundled plugin deps outside of source checkouts by default", async () => {
     const extensionsDir = await createExtensionsDir();
     const packageRoot = path.dirname(path.dirname(extensionsDir));
     await writePluginPackage(extensionsDir, "acpx", {
@@ -159,7 +159,7 @@ describe("bundled plugin postinstall", () => {
         acpx: "0.4.1",
       },
     });
-    const spawnSync = vi.fn();
+    const spawnSync = vi.fn(() => ({ status: 0, stderr: "", stdout: "" }));
 
     runBundledPluginPostinstall({
       env: { HOME: "/tmp/home" },
@@ -170,7 +170,7 @@ describe("bundled plugin postinstall", () => {
       log: { log: vi.fn(), warn: vi.fn() },
     });
 
-    expect(spawnSync).not.toHaveBeenCalled();
+    expectNpmInstallSpawn(spawnSync, packageRoot, ["acpx@0.4.1"]);
   });
 
   it("prunes source-checkout bundled plugin node_modules", async () => {
@@ -714,6 +714,30 @@ describe("bundled plugin postinstall", () => {
     });
 
     expectNpmInstallSpawn(spawnSync, packageRoot, ["grammy@1.38.4"]);
+  });
+
+  it("fails packaged install when bundled runtime dep installation fails", async () => {
+    const extensionsDir = await createExtensionsDir();
+    const packageRoot = path.dirname(path.dirname(extensionsDir));
+    await writePluginPackage(extensionsDir, "telegram", {
+      dependencies: {
+        grammy: "1.38.4",
+      },
+    });
+    const spawnSync = vi.fn(() => ({ status: 1, stderr: "network unavailable", stdout: "" }));
+
+    expect(() =>
+      runBundledPluginPostinstall({
+        env: { HOME: "/tmp/home" },
+        extensionsDir,
+        packageRoot,
+        npmRunner: createBareNpmRunner(["grammy@1.38.4"]),
+        spawnSync,
+        log: { log: vi.fn(), warn: vi.fn() },
+      }),
+    ).toThrow(
+      "[postinstall] failed to install bundled plugin deps (grammy@1.38.4): network unavailable",
+    );
   });
 
   it("prunes only bundled plugin package node_modules in source checkouts", async () => {

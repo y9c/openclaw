@@ -30,6 +30,37 @@ type BaileysHotfixResult = {
 
 type PostinstallBundledPluginsModule = {
   applyBaileysEncryptedStreamFinishHotfix: (params?: BaileysHotfixParams) => BaileysHotfixResult;
+  runBundledPluginPostinstall: (params?: {
+    env?: NodeJS.ProcessEnv;
+    packageRoot?: string;
+    extensionsDir?: string;
+    spawnSync?: typeof import("node:child_process").spawnSync;
+    existsSync?: typeof fs.existsSync;
+    readFileSync?: typeof fs.readFileSync;
+    readdirSync?: typeof fs.readdirSync;
+    rmSync?: typeof fs.rmSync;
+    mkdirSync?: typeof fs.mkdirSync;
+    writeFileSync?: typeof fs.writeFileSync;
+    runtimeDeps?: Array<{
+      name: string;
+      version: string;
+      sentinelPath: string;
+      pluginIds: string[];
+    }>;
+    log?: { log: (message: string) => void; warn: (message: string) => void };
+    npmRunner?: {
+      command: string;
+      args: string[];
+      env?: NodeJS.ProcessEnv;
+      shell?: boolean;
+      windowsVerbatimArguments?: boolean;
+    };
+    execPath?: string;
+    platform?: NodeJS.Platform;
+    comSpec?: string;
+    arch?: string;
+    readJson?: (path: string) => Record<string, unknown>;
+  }) => void;
 };
 
 async function loadStageBundledPluginRuntimeDeps(): Promise<StageBundledPluginRuntimeDeps> {
@@ -297,6 +328,105 @@ describe("stageBundledPluginRuntimeDeps", () => {
     expect(installs[0]?.devDependencies).toBeUndefined();
     expect(installs[0]?.peerDependencies).toBeUndefined();
     expect(installs[0]?.peerDependenciesMeta).toBeUndefined();
+  });
+
+  it("eagerly installs bundled runtime deps by default for packaged installs", async () => {
+    const packageRoot = makeRepoRoot("openclaw-postinstall-packaged-");
+    writeRepoFile(
+      packageRoot,
+      "dist/postinstall-inventory.json",
+      `${JSON.stringify(["dist/extensions/feishu/package.json"], null, 2)}\n`,
+    );
+    writeRepoFile(
+      packageRoot,
+      "dist/extensions/feishu/package.json",
+      `${JSON.stringify({ dependencies: { "@larksuiteoapi/node-sdk": "^1.60.0" } }, null, 2)}\n`,
+    );
+
+    const { runBundledPluginPostinstall } = await loadPostinstallBundledPluginsModule();
+    const spawnCalls: Array<{ command: string; args: string[]; cwd?: string }> = [];
+    const logs: string[] = [];
+
+    const spawnSync = ((command: string, ...rest: unknown[]) => {
+      const args = Array.isArray(rest[0]) ? [...rest[0]] : [];
+      const options = rest[1] as { cwd?: unknown } | undefined;
+      spawnCalls.push({
+        command,
+        args,
+        cwd: typeof options?.cwd === "string" ? options.cwd : undefined,
+      });
+      return { status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+    }) as typeof import("node:child_process").spawnSync;
+
+    runBundledPluginPostinstall({
+      packageRoot,
+      env: {},
+      npmRunner: {
+        command: "npm",
+        args: ["install", "--ignore-scripts", "@larksuiteoapi/node-sdk@^1.60.0"],
+      },
+      spawnSync,
+      log: {
+        log(message) {
+          logs.push(message);
+        },
+        warn(message) {
+          logs.push(message);
+        },
+      },
+    });
+
+    expect(spawnCalls).toEqual([
+      {
+        command: "npm",
+        args: ["install", "--ignore-scripts", "@larksuiteoapi/node-sdk@^1.60.0"],
+        cwd: packageRoot,
+      },
+    ]);
+    expect(logs).toContain(
+      "[postinstall] installed bundled plugin deps: @larksuiteoapi/node-sdk@^1.60.0",
+    );
+  });
+
+  it("supports disabling eager bundled runtime dep install with OPENCLAW_EAGER_BUNDLED_PLUGIN_DEPS=0", async () => {
+    const packageRoot = makeRepoRoot("openclaw-postinstall-disabled-");
+    writeRepoFile(
+      packageRoot,
+      "dist/postinstall-inventory.json",
+      `${JSON.stringify(["dist/extensions/feishu/package.json"], null, 2)}\n`,
+    );
+    writeRepoFile(
+      packageRoot,
+      "dist/extensions/feishu/package.json",
+      `${JSON.stringify({ dependencies: { "@larksuiteoapi/node-sdk": "^1.60.0" } }, null, 2)}\n`,
+    );
+
+    const { runBundledPluginPostinstall } = await loadPostinstallBundledPluginsModule();
+    let spawned = false;
+
+    const spawnSync = ((..._args: unknown[]) => {
+      spawned = true;
+      return {
+        status: 0,
+        stdout: Buffer.alloc(0),
+        stderr: Buffer.alloc(0),
+        pid: 1,
+        output: [null, Buffer.alloc(0), Buffer.alloc(0)],
+        signal: null,
+      };
+    }) as unknown as typeof import("node:child_process").spawnSync;
+
+    runBundledPluginPostinstall({
+      packageRoot,
+      env: { OPENCLAW_EAGER_BUNDLED_PLUGIN_DEPS: "0" },
+      spawnSync,
+      log: {
+        log() {},
+        warn() {},
+      },
+    });
+
+    expect(spawned).toBe(false);
   });
 
   it("patches installed Baileys encryptedStream flush ordering for shipped runtime deps", async () => {

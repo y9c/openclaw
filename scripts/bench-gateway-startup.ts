@@ -24,6 +24,7 @@ type GatewaySample = {
   firstOutputMs: number | null;
   healthz: ProbeResult;
   outputTail: string;
+  pluginLoadProfile: Record<string, number>;
   readyLogMs: number | null;
   readyz: ProbeResult;
   signal: string | null;
@@ -45,6 +46,7 @@ type CaseResult = {
   summary: {
     firstOutputMs: SummaryStats | null;
     healthzMs: SummaryStats | null;
+    pluginLoadProfile: Record<string, SummaryStats>;
     readyLogMs: SummaryStats | null;
     readyzMs: SummaryStats | null;
     startupTrace: Record<string, SummaryStats>;
@@ -56,6 +58,7 @@ type CliOptions = {
   entry: string;
   json: boolean;
   output?: string;
+  pluginLoadProfile: boolean;
   runs: number;
   timeoutMs: number;
   warmup: number;
@@ -94,6 +97,22 @@ const GATEWAY_CASES: readonly GatewayBenchCase[] = [
     name: "gateway, skip channels",
     env: { OPENCLAW_SKIP_CHANNELS: "1" },
     config: BASE_CONFIG,
+  },
+  {
+    id: "slackConfiguredSkipChannels",
+    name: "gateway, Slack configured, skip channel connect",
+    env: { OPENCLAW_SKIP_CHANNELS: "1" },
+    config: {
+      ...BASE_CONFIG,
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: "xapp-bench",
+          botToken: "xoxb-bench",
+        },
+      },
+    },
   },
   {
     id: "oneInternalHook",
@@ -180,11 +199,36 @@ function resolveCases(caseIds: string[]): GatewayBenchCase[] {
 }
 
 function parseOptions(): CliOptions {
+  if (hasFlag("--help")) {
+    console.log(
+      [
+        "Usage: pnpm tsx scripts/bench-gateway-startup.ts [options]",
+        "",
+        "Benchmark dist gateway startup with controlled configs.",
+        "",
+        "Options:",
+        "  --case <id>                 Limit to one or more built-in cases (repeatable)",
+        `  --entry <path>              Gateway entry to run (default: ${DEFAULT_ENTRY})`,
+        `  --runs <n>                  Measured runs per case (default: ${DEFAULT_RUNS})`,
+        `  --warmup <n>                Warmup runs per case (default: ${DEFAULT_WARMUP})`,
+        `  --timeout-ms <ms>           Per-run timeout (default: ${DEFAULT_TIMEOUT_MS})`,
+        "  --plugin-load-profile       Capture [plugin-load-profile] timings from the child gateway",
+        "  --output <path>             Write JSON report to a file",
+        "  --json                      Print the full JSON payload",
+        "  --help                      Show this help text",
+        "",
+        "Built-in cases:",
+        ...GATEWAY_CASES.map((benchCase) => `  - ${benchCase.id}: ${benchCase.name}`),
+      ].join("\n"),
+    );
+    process.exit(0);
+  }
   return {
     cases: resolveCases(parseRepeatableFlag("--case")),
     entry: parseFlagValue("--entry") ?? DEFAULT_ENTRY,
     json: hasFlag("--json"),
     output: parseFlagValue("--output"),
+    pluginLoadProfile: hasFlag("--plugin-load-profile"),
     runs: parsePositiveInt(parseFlagValue("--runs"), DEFAULT_RUNS),
     timeoutMs: parsePositiveInt(parseFlagValue("--timeout-ms"), DEFAULT_TIMEOUT_MS),
     warmup: parsePositiveInt(parseFlagValue("--warmup"), DEFAULT_WARMUP),
@@ -222,9 +266,13 @@ function summarizeNumbers(values: number[]): SummaryStats | null {
 
 function summarizeCase(benchCase: GatewayBenchCase, samples: GatewaySample[]): CaseResult {
   const startupTraceKeys = new Set<string>();
+  const pluginLoadProfileKeys = new Set<string>();
   for (const sample of samples) {
     for (const key of Object.keys(sample.startupTrace)) {
       startupTraceKeys.add(key);
+    }
+    for (const key of Object.keys(sample.pluginLoadProfile)) {
+      pluginLoadProfileKeys.add(key);
     }
   }
   const startupTrace: Record<string, SummaryStats> = {};
@@ -236,6 +284,17 @@ function summarizeCase(benchCase: GatewayBenchCase, samples: GatewaySample[]): C
     );
     if (stats) {
       startupTrace[key] = stats;
+    }
+  }
+  const pluginLoadProfile: Record<string, SummaryStats> = {};
+  for (const key of [...pluginLoadProfileKeys].toSorted()) {
+    const stats = summarizeNumbers(
+      samples
+        .map((sample) => sample.pluginLoadProfile[key])
+        .filter((value): value is number => typeof value === "number"),
+    );
+    if (stats) {
+      pluginLoadProfile[key] = stats;
     }
   }
   return {
@@ -253,6 +312,7 @@ function summarizeCase(benchCase: GatewayBenchCase, samples: GatewaySample[]): C
           .map((sample) => sample.healthz.ms)
           .filter((value): value is number => typeof value === "number"),
       ),
+      pluginLoadProfile,
       readyLogMs: summarizeNumbers(
         samples
           .map((sample) => sample.readyLogMs)
@@ -383,6 +443,7 @@ function sanitizedEnv(
   root: string,
   configPath: string,
   benchCase: GatewayBenchCase,
+  options?: { pluginLoadProfile?: boolean },
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     CI: process.env.CI ?? "1",
@@ -397,11 +458,15 @@ function sanitizedEnv(
     npm_config_update_notifier: "false",
     OPENCLAW_CONFIG: configPath,
     OPENCLAW_CONFIG_PATH: configPath,
+    OPENCLAW_DISABLE_BUNDLED_ENTRY_SOURCE_FALLBACK: "1",
     OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
     OPENCLAW_HOME: root,
     OPENCLAW_LOCAL_CHECK: "0",
+    OPENCLAW_NO_RESPAWN: "1",
     OPENCLAW_STATE_DIR: path.join(root, "state"),
     OPENCLAW_TEST_DISABLE_UPDATE_CHECK: "1",
+    NODE_COMPILE_CACHE: path.join(root, ".cache", "node-compile-cache"),
+    ...(options?.pluginLoadProfile ? { OPENCLAW_PLUGIN_LOAD_PROFILE: "1" } : {}),
     ...benchCase.env,
   };
   return env;
@@ -448,18 +513,32 @@ function collectStartupTrace(line: string, startupTrace: Record<string, number>)
   startupTrace[`${match[1]}.total`] = Number(match[3]);
 }
 
+function collectPluginLoadProfile(line: string, pluginLoadProfile: Record<string, number>): void {
+  const match = /\[plugin-load-profile\] phase=([^ ]+) plugin=([^ ]+) elapsedMs=([0-9.]+)/u.exec(
+    line,
+  );
+  if (!match) {
+    return;
+  }
+  pluginLoadProfile[`${match[2]}:${match[1]}`] = Number(match[3]);
+}
+
 async function runGatewaySample(options: {
   benchCase: GatewayBenchCase;
   entry: string;
+  pluginLoadProfile: boolean;
   timeoutMs: number;
 }): Promise<GatewaySample> {
   const root = mkdtempSync(path.join(tmpdir(), "openclaw-gateway-bench-"));
   const port = await getFreePort();
   const configPath = writeConfig(root, options.benchCase);
-  const env = sanitizedEnv(root, configPath, options.benchCase);
+  const env = sanitizedEnv(root, configPath, options.benchCase, {
+    pluginLoadProfile: options.pluginLoadProfile,
+  });
   const startAt = performance.now();
   const deadlineAt = startAt + options.timeoutMs;
   const startupTrace: Record<string, number> = {};
+  const pluginLoadProfile: Record<string, number> = {};
   const output: string[] = [];
   let firstOutputMs: number | null = null;
   let readyLogMs: number | null = null;
@@ -506,6 +585,7 @@ async function runGatewaySample(options: {
         readyLogMs = performance.now() - startAt;
       }
       collectStartupTrace(line, startupTrace);
+      collectPluginLoadProfile(line, pluginLoadProfile);
     }
   };
   child.stdout.on("data", onChunk);
@@ -529,13 +609,18 @@ async function runGatewaySample(options: {
   ]);
   const exit = await stopChild(child);
   await childExitPromise.catch(() => null);
-  rmSync(root, { force: true, maxRetries: 3, recursive: true, retryDelay: 100 });
+  try {
+    rmSync(root, { force: true, maxRetries: 3, recursive: true, retryDelay: 100 });
+  } catch {
+    // Best-effort temp cleanup only; a lingering file should not fail the benchmark.
+  }
 
   return {
     exitCode: exit.exitCode,
     firstOutputMs,
     healthz,
     outputTail: output.join("").split(/\r?\n/u).slice(-20).join("\n"),
+    pluginLoadProfile,
     readyLogMs,
     readyz,
     signal: exit.signal,
@@ -546,6 +631,7 @@ async function runGatewaySample(options: {
 async function runCase(options: {
   benchCase: GatewayBenchCase;
   entry: string;
+  pluginLoadProfile: boolean;
   runs: number;
   timeoutMs: number;
   warmup: number;
@@ -556,6 +642,7 @@ async function runCase(options: {
     const sample = await runGatewaySample({
       benchCase: options.benchCase,
       entry: options.entry,
+      pluginLoadProfile: options.pluginLoadProfile,
       timeoutMs: options.timeoutMs,
     });
     if (index >= options.warmup) {
@@ -588,6 +675,15 @@ function printResult(result: CaseResult): void {
       console.log(`    ${name}: ${formatStats(stats)}`);
     }
   }
+  const pluginLoad = Object.entries(result.summary.pluginLoadProfile)
+    .toSorted((a, b) => (b[1].avg ?? 0) - (a[1].avg ?? 0))
+    .slice(0, 8);
+  if (pluginLoad.length > 0) {
+    console.log("  plugin load top:");
+    for (const [name, stats] of pluginLoad) {
+      console.log(`    ${name}: ${formatStats(stats)}`);
+    }
+  }
 }
 
 async function main() {
@@ -598,6 +694,7 @@ async function main() {
       await runCase({
         benchCase,
         entry: options.entry,
+        pluginLoadProfile: options.pluginLoadProfile,
         runs: options.runs,
         timeoutMs: options.timeoutMs,
         warmup: options.warmup,

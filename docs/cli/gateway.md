@@ -67,6 +67,8 @@ Startup profiling:
 
 - Set `OPENCLAW_GATEWAY_STARTUP_TRACE=1` to log phase timings during Gateway startup.
 - Run `pnpm test:startup:gateway -- --runs 5 --warmup 1` to benchmark Gateway startup. The benchmark records first process output, `/healthz`, `/readyz`, and startup trace timings.
+- Run `pnpm test:startup:gateway:slack -- --runs 5 --warmup 1` for the dist-backed Slack-configured case that keeps `OPENCLAW_SKIP_CHANNELS=1` so startup stays close to packaged production registration cost without live Slack connection noise.
+- Add `--plugin-load-profile` to capture per-plugin `[plugin-load-profile]` phase timings alongside the gateway trace.
 
 ## Query a running Gateway
 

@@ -107,6 +107,30 @@ Checked-in fixture:
 - Refresh with `pnpm test:startup:bench:update`
 - Compare current results against the fixture with `pnpm test:startup:bench:check`
 
+## Gateway startup bench
+
+Script: [`scripts/bench-gateway-startup.ts`](https://github.com/openclaw/openclaw/blob/main/scripts/bench-gateway-startup.ts)
+
+Usage:
+
+- `pnpm test:startup:gateway`
+- `pnpm test:startup:gateway:slack`
+- `pnpm test:startup:gateway -- --case skipChannels --runs 5 --warmup 1`
+- `pnpm test:startup:gateway -- --case slackConfiguredSkipChannels --plugin-load-profile --runs 5 --warmup 1`
+- `pnpm test:startup:gateway -- --entry ../openclaw-main-bench/dist/entry.js --case slackConfiguredSkipChannels --plugin-load-profile --output .artifacts/gateway-startup-main.json`
+- `pnpm test:startup:gateway -- --case slackConfiguredSkipChannels --plugin-load-profile --output .artifacts/gateway-startup-pr.json`
+
+Built-in cases:
+
+- `default`: minimal local gateway startup
+- `skipChannels`: same, but skips channel connect loops
+- `slackConfiguredSkipChannels`: minimal Socket Mode Slack config from `dist`, with source fallback disabled and channel connect loops skipped so the benchmark stays close to packaged production startup without live network noise
+- `oneInternalHook`: one configured internal hook
+- `allInternalHooks`: all internal hooks
+- `fiftyPlugins`: synthetic manifest plugin fanout
+
+Output includes first process output, `/healthz`, ready-log timing, `/readyz`, startup-trace summaries, and optional `[plugin-load-profile]` summaries when `--plugin-load-profile` is enabled.
+
 ## Onboarding E2E (Docker)
 
 Docker is optional; this is only needed for containerized onboarding smoke tests.

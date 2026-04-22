@@ -72,6 +72,7 @@ vi.mock("./subagent-registry-helpers.js", () => ({
   persistSubagentSessionTiming: helperMocks.persistSubagentSessionTiming,
   resolveAnnounceRetryDelayMs: (retryCount: number) =>
     Math.min(1_000 * 2 ** Math.max(0, retryCount - 1), 8_000),
+  resolveArchiveAfterMs: () => 60_000,
   safeRemoveAttachmentsDir: helperMocks.safeRemoveAttachmentsDir,
 }));
 

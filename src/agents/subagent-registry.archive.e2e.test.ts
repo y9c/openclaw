@@ -5,6 +5,19 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { callGateway } from "../gateway/call.js";
 
 const noop = () => {};
+let lifecycleHandler:
+  | ((evt: {
+      stream?: string;
+      runId: string;
+      data?: {
+        phase?: string;
+        startedAt?: number;
+        endedAt?: number;
+        aborted?: boolean;
+        error?: string;
+      };
+    }) => void)
+  | undefined;
 let currentConfig = {
   agents: { defaults: { subagents: { archiveAfterMinutes: 60 } } },
 };
@@ -26,7 +39,10 @@ vi.mock("../gateway/call.js", () => ({
 }));
 
 vi.mock("../infra/agent-events.js", () => ({
-  onAgentEvent: vi.fn((_handler: unknown) => noop),
+  onAgentEvent: vi.fn((handler: typeof lifecycleHandler) => {
+    lifecycleHandler = handler;
+    return noop;
+  }),
 }));
 
 vi.mock("../config/config.js", async () => {
@@ -43,6 +59,10 @@ vi.mock("./subagent-announce.js", () => ({
 
 vi.mock("../plugins/hook-runner-global.js", () => ({
   getGlobalHookRunner: vi.fn(() => null),
+  getGlobalPluginRegistry: vi.fn(() => null),
+  hasGlobalHooks: vi.fn(() => false),
+  initializeGlobalHookRunner: vi.fn(),
+  resetGlobalHookRunner: vi.fn(),
 }));
 
 vi.mock("./subagent-registry.store.js", () => ({
@@ -60,6 +80,7 @@ describe("subagent registry archive behavior", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    lifecycleHandler = undefined;
     currentConfig = {
       agents: { defaults: { subagents: { archiveAfterMinutes: 60 } } },
     };
@@ -83,7 +104,11 @@ describe("subagent registry archive behavior", () => {
     vi.useRealTimers();
   });
 
-  it("does not set archiveAtMs for keep-mode run subagents", () => {
+  it("does not sweep keep-mode run subagents before cleanup completes, even after the archive window elapses", async () => {
+    currentConfig = {
+      agents: { defaults: { subagents: { archiveAfterMinutes: 1 } } },
+    };
+
     mod.registerSubagentRun({
       runId: "run-keep-1",
       childSessionKey: "agent:main:subagent:keep-1",
@@ -96,7 +121,48 @@ describe("subagent registry archive behavior", () => {
     const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
     expect(run?.runId).toBe("run-keep-1");
     expect(run?.spawnMode).toBe("run");
-    expect(run?.archiveAtMs).toBeUndefined();
+    expect(run?.archiveAtMs).toBe(Date.now() + 60_000);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mod.listSubagentRunsForRequester("agent:main:main")).toHaveLength(1);
+  });
+
+  it("sets archiveAtMs after keep-mode cleanup completes and sweeps after the archive window elapses", async () => {
+    currentConfig = {
+      agents: { defaults: { subagents: { archiveAfterMinutes: 1 } } },
+    };
+
+    mod.registerSubagentRun({
+      runId: "run-keep-complete",
+      childSessionKey: "agent:main:subagent:keep-complete",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "persistent-run",
+      cleanup: "keep",
+    });
+
+    const initialRun = mod.listSubagentRunsForRequester("agent:main:main")[0];
+    expect(initialRun?.archiveAtMs).toBe(Date.now() + 60_000);
+
+    lifecycleHandler?.({
+      stream: "lifecycle",
+      runId: "run-keep-complete",
+      data: {
+        phase: "end",
+        startedAt: 1_000,
+        endedAt: 2_000,
+      },
+    });
+    await vi.waitFor(() => {
+      const run = mod.listSubagentRunsForRequester("agent:main:main")[0];
+      expect(run?.cleanupCompletedAt).toBeTypeOf("number");
+      expect(run?.archiveAtMs).toBe(initialRun?.archiveAtMs);
+    });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(mod.listSubagentRunsForRequester("agent:main:main")).toHaveLength(0);
   });
 
   it("sets archiveAtMs and sweeps delete-mode run subagents", async () => {
@@ -252,7 +318,11 @@ describe("subagent registry archive behavior", () => {
     expect(run?.archiveAtMs).toBeUndefined();
   });
 
-  it("keeps archiveAtMs unset when replacing a keep-mode run after steer restart", () => {
+  it("recomputes archiveAtMs when replacing a keep-mode run after steer restart", async () => {
+    currentConfig = {
+      agents: { defaults: { subagents: { archiveAfterMinutes: 1 } } },
+    };
+
     mod.registerSubagentRun({
       runId: "run-old",
       childSessionKey: "agent:main:subagent:run-1",
@@ -261,6 +331,8 @@ describe("subagent registry archive behavior", () => {
       task: "persistent-run",
       cleanup: "keep",
     });
+
+    await vi.advanceTimersByTimeAsync(5_000);
 
     const replaced = mod.replaceSubagentRunAfterSteer({
       previousRunId: "run-old",
@@ -272,7 +344,7 @@ describe("subagent registry archive behavior", () => {
       .listSubagentRunsForRequester("agent:main:main")
       .find((entry) => entry.runId === "run-new");
     expect(run?.spawnMode).toBe("run");
-    expect(run?.archiveAtMs).toBeUndefined();
+    expect(run?.archiveAtMs).toBe(Date.now() + 60_000);
   });
 
   it("recomputes archiveAtMs when replacing a delete-mode run after steer restart", async () => {

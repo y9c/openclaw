@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createSubagentAnnounceDeliveryRuntimeMock } from "./subagent-announce.test-support.js";
 
@@ -280,6 +283,252 @@ describe("subagent announce seam flow", () => {
       },
       timeoutMs: 10_000,
     });
+  });
+
+  it("uses a persisted ANNOUNCE_SKIP reply even when embedded run activity looks stale", async () => {
+    isEmbeddedPiRunActiveMock.mockReturnValue(true);
+    waitForEmbeddedPiRunEndMock.mockResolvedValue(false);
+    callGatewayMock.mockImplementation(async (req: unknown) => {
+      const typed = req as AgentCallRequest;
+      if (typed.method === "agent") {
+        return await agentSpy(typed);
+      }
+      if (typed.method === "agent.wait") {
+        return { status: "ok", startedAt: 10, endedAt: 20 };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "ANNOUNCE_SKIP" }],
+            },
+          ] as Array<unknown>,
+        };
+      }
+      if (typed.method === "sessions.patch") {
+        return {};
+      }
+      if (typed.method === "sessions.delete") {
+        sessionsDeleteSpy(typed);
+        return {};
+      }
+      return {};
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-stale-active-skip",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "do thing",
+      timeoutMs: 10,
+      cleanup: "delete",
+      waitForCompletion: false,
+      startedAt: 10,
+      endedAt: 20,
+      outcome: { status: "ok" },
+    });
+
+    expect(waitForEmbeddedPiRunEndMock).toHaveBeenCalledWith("agent:main:subagent:test", 10);
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).not.toHaveBeenCalled();
+    expect(sessionsDeleteSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("caps stale embedded settle waits during post-completion cleanup retries", async () => {
+    isEmbeddedPiRunActiveMock.mockReturnValue(true);
+    waitForEmbeddedPiRunEndMock.mockResolvedValue(false);
+    loadSessionStoreMock.mockImplementation(() => ({
+      "agent:main:subagent:test": {
+        sessionId: "child-session-active",
+      },
+    }));
+    callGatewayMock.mockImplementation(async (req: unknown) => {
+      const typed = req as AgentCallRequest;
+      if (typed.method === "agent") {
+        return await agentSpy(typed);
+      }
+      if (typed.method === "agent.wait") {
+        return { status: "ok", startedAt: 10, endedAt: 20 };
+      }
+      if (typed.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "ANNOUNCE_SKIP" }],
+            },
+          ] as Array<unknown>,
+        };
+      }
+      if (typed.method === "sessions.patch") {
+        return {};
+      }
+      if (typed.method === "sessions.delete") {
+        sessionsDeleteSpy(typed);
+        return {};
+      }
+      return {};
+    });
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-stale-active-skip-capped-timeout",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "do thing",
+      timeoutMs: 10_000,
+      cleanup: "keep",
+      waitForCompletion: false,
+      startedAt: 10,
+      endedAt: 20,
+      outcome: { status: "ok" },
+    });
+
+    expect(waitForEmbeddedPiRunEndMock).toHaveBeenCalledWith("child-session-active", 1500);
+    expect(didAnnounce).toBe(true);
+    expect(agentSpy).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the transcript file when gateway chat history has not caught up", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "subagent-announce-"));
+    const sessionId = "123e4567-e89b-12d3-a456-426614174000";
+    const storePath = path.join(tmpDir, "sessions.json");
+    const sessionFile = path.join(tmpDir, `${sessionId}.jsonl`);
+    try {
+      resolveStorePathMock.mockImplementation(() => storePath);
+      await writeFile(
+        sessionFile,
+        `${JSON.stringify({
+          type: "message",
+          id: "assistant-1",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "ANNOUNCE_SKIP" }],
+          },
+        })}\n`,
+        "utf8",
+      );
+      isEmbeddedPiRunActiveMock.mockReturnValue(true);
+      waitForEmbeddedPiRunEndMock.mockResolvedValue(false);
+      readLatestAssistantReplyMock.mockResolvedValue("");
+      loadSessionStoreMock.mockImplementation(() => ({
+        "agent:main:subagent:test": {
+          sessionId,
+          sessionFile,
+        },
+      }));
+      callGatewayMock.mockImplementation(async (req: unknown) => {
+        const typed = req as AgentCallRequest;
+        if (typed.method === "agent") {
+          return await agentSpy(typed);
+        }
+        if (typed.method === "agent.wait") {
+          return { status: "ok", startedAt: 10, endedAt: 20 };
+        }
+        if (typed.method === "chat.history") {
+          return { messages: [] as Array<unknown> };
+        }
+        if (typed.method === "sessions.patch") {
+          return {};
+        }
+        if (typed.method === "sessions.delete") {
+          sessionsDeleteSpy(typed);
+          return {};
+        }
+        return {};
+      });
+
+      const didAnnounce = await runSubagentAnnounceFlow({
+        childSessionKey: "agent:main:subagent:test",
+        childRunId: "run-transcript-fallback",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "do thing",
+        timeoutMs: 10_000,
+        cleanup: "keep",
+        waitForCompletion: false,
+        startedAt: 10,
+        endedAt: 20,
+        outcome: { status: "ok" },
+      });
+
+      expect(didAnnounce).toBe(true);
+      expect(agentSpy).not.toHaveBeenCalled();
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("uses persisted transcript output before gateway history during stale cleanup", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "subagent-announce-"));
+    const sessionId = "223e4567-e89b-12d3-a456-426614174000";
+    const storePath = path.join(tmpDir, "sessions.json");
+    const sessionFile = path.join(tmpDir, `${sessionId}.jsonl`);
+    try {
+      resolveStorePathMock.mockImplementation(() => storePath);
+      await writeFile(
+        sessionFile,
+        `${JSON.stringify({
+          type: "message",
+          id: "assistant-1",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "ANNOUNCE_SKIP" }],
+          },
+        })}\n`,
+        "utf8",
+      );
+      isEmbeddedPiRunActiveMock.mockReturnValue(true);
+      waitForEmbeddedPiRunEndMock.mockResolvedValue(false);
+      readLatestAssistantReplyMock.mockResolvedValue("");
+      loadSessionStoreMock.mockImplementation(() => ({
+        "agent:main:subagent:test": {
+          sessionId,
+          sessionFile,
+        },
+      }));
+      callGatewayMock.mockImplementation(async (req: unknown) => {
+        const typed = req as AgentCallRequest;
+        if (typed.method === "agent") {
+          return await agentSpy(typed);
+        }
+        if (typed.method === "agent.wait") {
+          return { status: "ok", startedAt: 10, endedAt: 20 };
+        }
+        if (typed.method === "chat.history") {
+          throw new Error("chat history should not be needed");
+        }
+        if (typed.method === "sessions.patch") {
+          return {};
+        }
+        if (typed.method === "sessions.delete") {
+          sessionsDeleteSpy(typed);
+          return {};
+        }
+        return {};
+      });
+
+      const didAnnounce = await runSubagentAnnounceFlow({
+        childSessionKey: "agent:main:subagent:test",
+        childRunId: "run-transcript-first-fallback",
+        requesterSessionKey: "agent:main:main",
+        requesterDisplayKey: "main",
+        task: "do thing",
+        timeoutMs: 10_000,
+        cleanup: "keep",
+        waitForCompletion: false,
+        startedAt: 10,
+        endedAt: 20,
+        outcome: { status: "ok" },
+      });
+
+      expect(didAnnounce).toBe(true);
+      expect(agentSpy).not.toHaveBeenCalled();
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("keeps lifecycle hooks enabled when deleting a completed session-mode child session", async () => {

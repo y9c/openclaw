@@ -28,6 +28,7 @@ import {
   MIN_ANNOUNCE_RETRY_DELAY_MS,
   persistSubagentSessionTiming,
   resolveAnnounceRetryDelayMs,
+  resolveArchiveAfterMs,
   safeRemoveAttachmentsDir,
 } from "./subagent-registry-helpers.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
@@ -401,6 +402,17 @@ export function createSubagentRegistryLifecycleController(params: {
       workspaceDir: cleanupParams.entry.workspaceDir,
     });
     cleanupParams.entry.cleanupCompletedAt = cleanupParams.completedAt;
+    if (
+      cleanupParams.entry.spawnMode !== "session" &&
+      typeof cleanupParams.entry.archiveAtMs !== "number"
+    ) {
+      const archiveAfterMs = resolveArchiveAfterMs();
+      cleanupParams.entry.archiveAtMs = archiveAfterMs
+        ? cleanupParams.completedAt + archiveAfterMs
+        : undefined;
+    } else if (cleanupParams.entry.spawnMode === "session") {
+      cleanupParams.entry.archiveAtMs = undefined;
+    }
     params.persist();
     retryDeferredCompletedAnnounces(cleanupParams.runId);
   };

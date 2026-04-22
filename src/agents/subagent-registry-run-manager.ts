@@ -236,11 +236,7 @@ export function createSubagentRunManager(params: {
     const archiveAfterMs = resolveArchiveAfterMs(cfg);
     const spawnMode = source.spawnMode === "session" ? "session" : "run";
     const archiveAtMs =
-      spawnMode === "session" || source.cleanup === "keep"
-        ? undefined
-        : archiveAfterMs
-          ? now + archiveAfterMs
-          : undefined;
+      spawnMode === "session" ? undefined : archiveAfterMs ? now + archiveAfterMs : undefined;
     const runTimeoutSeconds = replaceParams.runTimeoutSeconds ?? source.runTimeoutSeconds ?? 0;
     const waitTimeoutMs = params.resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
     const preserveFrozenResultFallback = replaceParams.preserveFrozenResultFallback === true;
@@ -302,11 +298,7 @@ export function createSubagentRunManager(params: {
     const archiveAfterMs = resolveArchiveAfterMs(cfg);
     const spawnMode = registerParams.spawnMode === "session" ? "session" : "run";
     const archiveAtMs =
-      spawnMode === "session" || registerParams.cleanup === "keep"
-        ? undefined
-        : archiveAfterMs
-          ? now + archiveAfterMs
-          : undefined;
+      spawnMode === "session" ? undefined : archiveAfterMs ? now + archiveAfterMs : undefined;
     const runTimeoutSeconds = registerParams.runTimeoutSeconds ?? 0;
     const waitTimeoutMs = params.resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
     const requesterOrigin = normalizeDeliveryContext(registerParams.requesterOrigin);

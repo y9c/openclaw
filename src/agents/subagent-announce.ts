@@ -31,6 +31,7 @@ import {
   dedupeLatestChildCompletionRows,
   filterCurrentDirectChildCompletionRows,
   readLatestSubagentOutputWithRetry,
+  readPersistedSubagentOutput,
   readSubagentOutput,
   type SubagentRunOutcome,
   waitForSubagentRunOutcome,
@@ -94,6 +95,9 @@ function buildAnnounceSteerMessage(events: AgentInternalEvent[]): string {
     "A background task finished. Process the completion update now."
   );
 }
+
+const MAX_EMBEDDED_RUN_SETTLE_TIMEOUT_MS = 120_000;
+const MAX_POST_COMPLETION_EMBEDDED_RUN_SETTLE_TIMEOUT_MS = 1_500;
 
 function hasUsableSessionEntry(entry: unknown): boolean {
   if (!entry || typeof entry !== "object") {
@@ -258,14 +262,26 @@ export async function runSubagentAnnounceFlow(params: {
         ? entry.sessionId.trim()
         : undefined;
     })();
-    const settleTimeoutMs = Math.min(Math.max(params.timeoutMs, 1), 120_000);
+    const settleTimeoutMs = Math.min(
+      Math.max(params.timeoutMs, 1),
+      params.waitForCompletion === false
+        ? MAX_POST_COMPLETION_EMBEDDED_RUN_SETTLE_TIMEOUT_MS
+        : MAX_EMBEDDED_RUN_SETTLE_TIMEOUT_MS,
+    );
     let reply = params.roundOneReply;
     let outcome: SubagentRunOutcome | undefined = params.outcome;
     if (childSessionId && isEmbeddedPiRunActive(childSessionId)) {
       const settled = await waitForEmbeddedPiRunEnd(childSessionId, settleTimeoutMs);
       if (!settled && isEmbeddedPiRunActive(childSessionId)) {
-        shouldDeleteChildSession = false;
-        return false;
+        if (params.waitForCompletion === false && !reply?.trim()) {
+          reply =
+            readPersistedSubagentOutput(params.childSessionKey, outcome) ??
+            (await readSubagentOutput(params.childSessionKey, outcome));
+        }
+        if (!reply?.trim()) {
+          shouldDeleteChildSession = false;
+          return false;
+        }
       }
     }
 

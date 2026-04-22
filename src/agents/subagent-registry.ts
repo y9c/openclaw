@@ -601,6 +601,9 @@ async function sweepSubagentRuns() {
       if (entry.archiveAtMs > now) {
         continue;
       }
+      if (entry.cleanup === "keep" && typeof entry.cleanupCompletedAt !== "number") {
+        continue;
+      }
       clearPendingLifecycleError(runId);
       try {
         await subagentRegistryDeps.callGateway({

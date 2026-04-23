@@ -6,7 +6,7 @@ export default defineConfig({
   retries: 0,
   use: {
     browserName: "webkit", // Safari!
-    baseURL: "http://127.0.0.1:19004",
+    baseURL: "http://127.0.0.1:19005",
     headless: true,
     screenshot: "only-on-failure",
     trace: "retain-on-failure",

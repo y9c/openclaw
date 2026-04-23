@@ -1,209 +1,130 @@
-# Lifecycle hook E2E results (WebKit / Safari)
+# Lifecycle Hook E2E Test Results
 
-Run date: 2026-04-22 03:05 AEST
-Gateway: dev gateway on port 19004 (worktree `lifecycle-hooks`, OpenClaw 2026.4.15-beta.1, OPENCLAW_SKIP_CHANNELS=1)
-Browser: WebKit (Playwright 1.59.1)
-Total: **8 tests, 8 passed, 0 failed** (~41 s wall clock).
+**Date:** 2026-04-23
+**Browser:** WebKit (Safari)
+**Gateway:** Dev gateway on port 19005 (worktree `lifecycle-hooks`)
+**Model:** claude-opus-4-6 via atlassian-ai-gateway-proxy
+**Suite:** 13 tests, 1.8m total runtime
 
-The dev gateway under test was started from this worktree on port 19004; the
-production gateway on port 19003 was untouched. The agent model used by the
-gateway is `atlassian-ai-gateway-proxy/claude-opus-4-6`, routed through the
-local Proximity at `http://127.0.0.1:29576/vertex/claude/v1`.
+## Results Summary
 
-Each test:
+| #   | Test                                                                             | Status  | Time  |
+| --- | -------------------------------------------------------------------------------- | ------- | ----- |
+| 1   | Normal message (no hook trigger)                                                 | ✅ Pass | 14.0s |
+| 2   | HOOK_BLOCK_RUN — before_agent_run block                                          | ✅ Pass | 2.2s  |
+| 3   | HOOK_ASK_RUN — before_agent_run ask (approve)                                    | ✅ Pass | 6.7s  |
+| 4   | HOOK_ASK_RUN — before_agent_run ask (deny)                                       | ✅ Pass | 2.2s  |
+| 5   | HOOK_BLOCK_OUTPUT — llm_output block                                             | ✅ Pass | 7.5s  |
+| 6   | HOOK_BLOCK_OUTPUT — UI replaces streamed text with block warning                 | ✅ Pass | 19.9s |
+| 7   | HOOK_BLOCK_RETRY — llm_output block with retry                                   | ✅ Pass | 5.8s  |
+| 8   | HOOK_ASK_OUTPUT — llm_output ask (approve)                                       | ✅ Pass | 7.5s  |
+| 9   | HOOK_ASK_OUTPUT — llm_output ask (deny)                                          | ✅ Pass | 5.8s  |
+| 10  | HOOK_ASK_TOOL_INPUT — must pause tool dispatch for approval                      | ✅ Pass | 6.5s  |
+| 11  | HOOK_BLOCK_RETRY — retry notices in assistant bubbles, no duplicate user bubbles | ✅ Pass | 21.7s |
+| 12  | HOOK_BLOCK_TOOL_OUTPUT — tool runs, then turn ends with styled block message     | ✅ Pass | 3.9s  |
+| 13  | HOOK_ASK_TOOL_OUTPUT — tool result substituted, model never sees real output     | ✅ Pass | 5.1s  |
 
-1. Loads the control-ui page in WebKit (auth token pre-seeded into
-   `localStorage` for the SPA).
-2. Captures every page-originated WebSocket frame via `page.on('websocket')`.
-3. Opens its own raw WebSocket from inside the browser context and runs the
-   gateway's documented `connect` → `chat.send` flow with a fresh
-   `sessionKey` and `idempotencyKey`.
-4. Replays approval decisions on `plugin.approval.requested` events.
-5. Saves protocol frames to `frames/<test>.jsonl`, screenshots to
-   `screenshots/`, and a structured per-test record to `results.jsonl`.
+## Trigger Taxonomy
 
-## Per-test summary
+| Trigger                  | Hook                                       | Effect                                                                                                                                                                                                 |
+| ------------------------ | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `HOOK_BLOCK_RUN`         | `before_agent_run`                         | Block entire run. User bubble preserved with `🛡️ Hidden from agents` banner. Agent sees policy stub only.                                                                                              |
+| `HOOK_ASK_RUN`           | `before_agent_run`                         | Approval prompt before LLM call. Approve → normal. Deny → user bubble preserved, turn ends.                                                                                                            |
+| `HOOK_BLOCK_OUTPUT`      | `llm_output`                               | Block LLM text reply. Streamed text replaced with `⚠️ Agent failed before reply:` block notice. Persisted JSONL scrubbed so reload doesn't resurrect original text.                                    |
+| `HOOK_BLOCK_RETRY`       | `llm_output`                               | Block + retry. Each attempt's assistant bubble replaced in-place with `⚠️ Response blocked — retrying (N/M)...`. No duplicate user bubbles. Final message shows `⚠️ Response blocked after N retries.` |
+| `HOOK_ASK_OUTPUT`        | `llm_output`                               | Approval prompt on LLM text. Approve → text delivered. Deny → text replaced with denial notice.                                                                                                        |
+| `HOOK_BLOCK_TOOL_INPUT`  | `before_tool_call`                         | Block tool execution. Tool body never runs (no side effects). Styled block message.                                                                                                                    |
+| `HOOK_ASK_TOOL_INPUT`    | `before_tool_call`                         | Approval prompt before tool execution. Approve → tool runs. Deny → tool blocked.                                                                                                                       |
+| `HOOK_BLOCK_TOOL_OUTPUT` | `after_tool_call` + `before_message_write` | Tool runs (side effects happen), but result blocked from persistence and model. Styled `⚠️ Agent failed before reply:` block notice.                                                                   |
+| `HOOK_ASK_TOOL_OUTPUT`   | `after_tool_call` + `before_message_write` | Tool runs, result substituted with policy notice via `before_message_write`. Model never sees real output.                                                                                             |
 
-| #   | Test                             | Hook                       | finalState | deltas | approvals | textLen | Headline                                                            |
-| --- | -------------------------------- | -------------------------- | ---------: | -----: | --------: | ------: | ------------------------------------------------------------------- |
-| 1   | normal message (no hook trigger) | none                       |      final |      1 |         0 |       2 | LLM responded "OK"                                                  |
-| 2   | HOOK_BLOCK_RUN                   | before_agent_run / block   |      error |      0 |         0 |     129 | Run blocked before any LLM streaming                                |
-| 3   | HOOK_ASK_RUN — approve           | before_agent_run / ask     |      final |      7 |         1 |     240 | Approval honoured, run continued, LLM streamed reply                |
-| 4   | HOOK_ASK_RUN — deny              | before_agent_run / ask     |      error |      0 |         1 |     111 | Run denied, no LLM streaming                                        |
-| 5   | HOOK_BLOCK_OUTPUT                | llm_output / block         |      error |      9 |         0 |      75 | LLM streamed, then `final` swapped to block text, `error` follow-up |
-| 6   | HOOK_BLOCK_RETRY                 | llm_output / block (retry) |      error |      6 |         0 |      38 | LLM streamed, retry applied, terminal block reached                 |
-| 7   | HOOK_ASK_OUTPUT — approve        | llm_output / ask           |      final |      7 |         1 |     262 | Streamed → approval requested → approved → kept                     |
-| 8   | HOOK_ASK_OUTPUT — deny           | llm_output / ask           |      error |      6 |         1 |      59 | Streamed → approval requested → denied → response withheld          |
+## Bugs Fixed
 
-`deltas` = number of `chat` events with `state === "delta"` observed during the
-run. `approvals` = number of `plugin.approval.requested` events received.
-`textLen` = length of the final assistant text (or block message text) the UI
-would display.
+### Bug 1: `redactMessages` shape mismatch
 
-## Test 1 — normal message
+- **Root cause:** `match` filter checked top-level `role`/`content`, but real JSONL entries use `{type:"message", message:{role, content:[...]}}`.
+- **Fix:** Updated matcher to read nested `entry.parsed.message.role` and `entry.parsed.message.content[*].text`.
+- **Tests:** 17 unit tests in `src/plugins/hook-redaction.test.ts`.
 
-Trigger: `Reply with the single word OK and nothing else.`
+### Bug 2: HOOK_BLOCK_OUTPUT — streamed text survives reload
 
-- `chat` event with `state: "delta"` arrived (1 incremental frame because the
-  reply is tiny), then `state: "final"` with the assistant message.
-- Visual: control-ui renders the assistant text "OK".
-- ✅ Passed.
+- **Root cause:** Inline block path emitted `state: "final"` with replacement text but didn't scrub the prior streamed assistant message from JSONL. SPA's `chat.history` reload restored the original streamed text.
+- **Fix:** After inline block, call `redactMessages` targeting the prior assistant text, then persist the replacement message.
+- **Tests:** E2e test #6 uses a unique nonce in the prompt, waits for reload, and asserts no assistant bubble contains the nonce.
 
-## Test 2 — HOOK_BLOCK_RUN (before_agent_run / block)
+### Bug 3: HOOK_BLOCK_RUN — user bubble shows policy text
 
-Trigger: `HOOK_BLOCK_RUN please block this`
+- **Root cause:** `appendBlockedUserMessageToSessionTranscript` persists `originalBlockedContent` sidecar, but `normalizeMessage` in SPA didn't check it. The bubble rendered `message.content` (policy stub) instead of the original.
+- **Fix:** Added `originalBlockedContent` check in `normalizeMessage` and `extractText` for user-role messages. SPA now shows original text with `🛡️ Hidden from agents` banner.
 
-- No `delta` frames at all: hook ran before the LLM call.
-- One `chat` event with `state: "final"` whose `message.content[0].text` is:
-  `⚠️ Agent failed before reply: 🚫 [hook-echo] This run was blocked by the hook-echo diagnostic plugin.`
-- The test classifier marks this as `error` because the final message body
-  matches the block warning pattern; the gateway reports it as `state: "final"`
-  with block-formatted text, which is the existing UX contract for
-  `before_agent_run` blocks.
-- ✅ Passed (assertion: error-shaped final, body contains "block/policy/denied",
-  zero `delta` frames).
+### Bug 4: HOOK_ASK_RUN (deny) — user bubble lost
 
-## Test 3 — HOOK_ASK_RUN (approve)
+- **Root cause:** On deny, `skipPromptSubmission = true` so SDK never persisted the user message.
+- **Fix:** Added `appendBlockedUserMessageToSessionTranscript` call on the deny path.
 
-Trigger: `HOOK_ASK_RUN please ask, then continue`
+### Bug 5: HOOK_BLOCK_RETRY — duplicate user bubbles stacked
 
-- `plugin.approval.requested` event arrived once (`approvalIds.length === 1`).
-- Test sent `plugin.approval.resolve` with `decision: "allow-once"` over the
-  same WebSocket.
-- 7 `delta` frames and a final assistant message followed.
-- ✅ Passed.
+- **Root cause:** On retry, `activeSession.prompt()` re-persists the user message.
+- **Fix:** Added `redactDuplicateUserMessage` helper that scrubs the latest duplicate after prompt() on retry attempts.
 
-## Test 4 — HOOK_ASK_RUN (deny)
+### Bug 6: HOOK_BLOCK_RETRY — messages disappear instead of showing retry notice
 
-Trigger: `HOOK_ASK_RUN please ask, then deny`
+- **Root cause:** `replaceLlmOutputResponse` scrubbed the assistant message entirely on retry, leaving a blank gap.
+- **Fix:** On retry, persist a replacement assistant message with `⚠️ Response blocked — retrying (N/M)...` + reason. On final exhaustion, persist `⚠️ Response blocked after N retries.` + reason.
 
-- `plugin.approval.requested` arrived once.
-- Test sent `plugin.approval.resolve` with `decision: "deny"`.
-- Zero `delta` frames; final text:
-  `⚠️ Agent failed before reply: 🚫 [hook-echo] Run denied — approval was not granted.`
-- ✅ Passed.
+### Bug 7: HOOK_BLOCK_TOOL_OUTPUT — generic "This response was blocked by policy"
 
-## Test 5 — HOOK_BLOCK_OUTPUT (llm_output / block) — primary diagnostic
+- **Root cause:** Plugin returned `reason` but not `message`/`userMessage`. `resolveBlockMessage` didn't fall back to `reason`.
+- **Fix:** Updated `resolveBlockMessage` to check `reason` before the generic default. Also added `message`/`userMessage` to hook-echo's after_tool_call return.
 
-Trigger: `HOOK_BLOCK_OUTPUT please answer something then get blocked`
+### Bug 8: HOOK_BLOCK_TOOL_OUTPUT — tool result persisted to transcript
 
-This is the case the brief flagged as **the most important diagnostic**.
+- **Root cause:** Tool result was persisted before `after_tool_call` could block it.
+- **Fix:** Added `before_message_write` hook in hook-echo that blocks `toolResult` persistence for sessions with `HOOK_BLOCK_TOOL_OUTPUT` trigger. Fixed session-tool-result-guard-wrapper to always wire `beforeMessageWrite` and pass `sessionKey` in the event.
 
-Observed WebSocket sequence (chat events only, simplified — see
-`frames/HOOK_BLOCK_OUTPUT_llm_output_block.jsonl` for full frames):
+### Bug 9: HOOK_ASK_TOOL_OUTPUT — tool result unredacted
 
-| seq | state     | message text (preview)                                                                                            |
-| --: | --------- | ----------------------------------------------------------------------------------------------------------------- |
-|   2 | delta     | `Hey`                                                                                                             |
-|   3 | delta     | `Hey.`                                                                                                            |
-|   9 | delta     | `Hey. I just came online — fresh workspace, no memories yet`                                                      |
-|  17 | delta     | `…\n\nBefore we get into`                                                                                         |
-|  22 | delta     | `…\n\nBefore we get into`                                                                                         |
-|  28 | delta     | `…\n\nBefore we get into`                                                                                         |
-|  32 | delta     | `…\n\nBefore we get into`                                                                                         |
-|  40 | delta     | `…\n\nBefore we get into`                                                                                         |
-|  45 | delta     | `…\n\nBefore we get into`                                                                                         |
-|  52 | **final** | `🔒 [hook-echo] This response was blocked by the hook-echo diagnostic plugin.`                                    |
-|  52 | **error** | `errorKind: "hook_block"`, message `🔒 [hook-echo] This response was blocked by the hook-echo diagnostic plugin.` |
+- **Root cause:** Same as Bug 8 but for ASK path. `after_tool_call` is observational, not a gating seam.
+- **Fix:** `before_message_write` hook substitutes `toolResult` content with policy notice for sessions with `HOOK_ASK_TOOL_OUTPUT` trigger. Model continues but never sees real tool output.
 
-Interpretation:
+## Architectural Notes
 
-- The LLM streams normally (9 `delta` frames).
-- After the LLM output completes, the hook intervenes and the gateway emits a
-  `state: "final"` chat event whose `message.content[0].text` is the block
-  message (replacing the streamed response in the canonical message body).
-- The gateway then immediately emits a `state: "error"` chat event with
-  `errorKind: "hook_block"` and the same block message in `errorMessage`. Both
-  carry the same `seq: 52`.
+### `after_tool_call` is observational, not a gating seam
 
-What the control-ui actually renders depends on which of those two terminal
-frames it acts on. The protocol now provides both signals (canonical
-block-shaped final, and an explicit `state: "error" / errorKind: "hook_block"`
-follow-up), so a UI that wants to show a clean error banner has the data it
-needs. A UI that only consumes `final.message.content[0].text` will render the
-block warning instead of the streamed assistant text — which is the intended
-behaviour for the operator-visible transcript.
+The `tool_execution_end` event fires after the tool result is already available to the SDK. The model loop can advance before `after_tool_call` handlers complete. True tool-output gating is implemented via `before_message_write` in the session transcript guard, which fires synchronously before persistence.
 
-The previously suspected gap ("UI may still show streamed text") was **not
-reproduced over this WebSocket protocol path**: the final canonical message
-body delivered to any consumer is the block warning, not the streamed
-assistant draft. If the UI still shows the streamed text in some scenario, the
-divergence is in how the SPA reconciles `delta` frames with the terminal
-`final`, not in what the gateway emits.
+### `HOOK_ASK_TOOL_OUTPUT` — no interactive approval prompt
 
-- ✅ Passed.
+The `before_message_write` substitution prevents the real tool output from reaching the model, but there is no interactive approval prompt surfaced to the user. Implementing true interactive approval for tool output would require a new SDK-level gating seam at the tool-result handoff boundary.
 
-Screenshots: `screenshots/block_output_pre.png`, `screenshots/block_output_post.png`,
-plus `HOOK_BLOCK_OUTPUT___llm_output_block_end.png`.
+### `HOOK_BLOCK_TOOL_INPUT` vs `HOOK_BLOCK_TOOL_OUTPUT`
 
-## Test 6 — HOOK_BLOCK_RETRY (llm_output / block with retry)
+- **INPUT:** Pre-execution gate. Tool body never runs — no side effects.
+- **OUTPUT:** Post-execution gate. Tool already ran (side effects happened). Only the result is blocked from reaching the model.
 
-Trigger: `HOOK_BLOCK_RETRY please answer and trigger retry`
+## Files Modified
 
-- 6 `delta` frames observed across attempts.
-- Terminal frame: `state: "error"` with body
-  `Response blocked by policy — retrying.`
-- The retry counter previously reported as broken is now functional: the
-  gateway issues multiple LLM attempts and finally surfaces a single terminal
-  block to the UI.
-- ✅ Passed.
+### Backend
 
-## Test 7 — HOOK_ASK_OUTPUT (approve)
+- `src/agents/pi-embedded-runner/run/attempt.ts` — inline `llm_output` block, retry dedupe, ASK_RUN deny persistence, tool block styling, retry notice replacement
+- `src/agents/pi-embedded-subscribe.handlers.ts` — removed `detach: true` from `tool_execution_end`
+- `src/agents/pi-embedded-subscribe.handlers.tools.ts` — reordered tool output emission after hook, styled block messages, approval path
+- `src/agents/session-tool-result-guard-wrapper.ts` — always wire `beforeMessageWrite`, pass `sessionKey` in event
+- `src/plugins/hook-redaction.ts` — `redactDuplicateUserMessage` helper
+- `src/plugins/hook-decision-types.ts` — `resolveBlockMessage` falls back to `reason`
+- `src/config/sessions/transcript.ts` — `appendBlockedUserMessageToSessionTranscript`
+- `src/gateway/session-utils.fs.ts` — forward `originalBlockedContent` sidecar
+- `extensions/hook-echo/index.ts` — `before_message_write` handler, `before_tool_call`/`after_tool_call` tool triggers, session-scoped state, styled messages
 
-Trigger: `HOOK_ASK_OUTPUT please answer and ask for approval`
+### SPA
 
-- LLM streams (7 deltas).
-- `plugin.approval.requested` arrives.
-- Test resolves with `allow-once`.
-- Run completes with `state: "final"` and the assistant message preserved.
-- ✅ Passed.
+- `ui/src/ui/chat/message-extract.ts` — render `originalBlockedContent` for user messages
+- `ui/src/ui/chat/message-normalizer.ts` — read `originalBlockedContent` in `normalizeMessage`
+- `ui/src/ui/chat/grouped-render.ts` — `🛡️ Hidden from agents` banner for blocked user messages
 
-## Test 8 — HOOK_ASK_OUTPUT (deny)
+### Tests
 
-Trigger: `HOOK_ASK_OUTPUT please answer then deny`
-
-- LLM streams (6 deltas).
-- `plugin.approval.requested` arrives.
-- Test resolves with `deny`.
-- Terminal frame: `state: "error"` with body
-  `🔒 [hook-echo] Response withheld — approval was not granted.`
-- ✅ Passed.
-
-## Files produced
-
-- `e2e/playwright.config.ts` — WebKit-only Playwright config.
-- `e2e/hooks-e2e.spec.ts` — the suite (8 tests).
-- `e2e/package.json` — local pin of `@playwright/test@1.59.1`.
-- `e2e/screenshots/*.png` — pre/post snapshots for each hook scenario.
-- `e2e/frames/*.jsonl` — every WebSocket frame the SPA exchanged with the
-  gateway during the test, in order.
-- `e2e/results.jsonl` — structured per-test outcome (events, errors, text).
-- `e2e/playwright-report/` — Playwright HTML report.
-
-## How to re-run
-
-```bash
-# 1. Make sure dist is built (once)
-cd ~/repos/openclaw/.worktrees/lifecycle-hooks && npx tsdown
-
-# 2. Start the dev gateway on its own port (do NOT touch :19003)
-OPENCLAW_SKIP_CHANNELS=1 /opt/homebrew/bin/node dist/index.js gateway --port 19004 \
-  > /tmp/dev-gateway-19004.log 2>&1 &
-
-# 3. Run the suite
-cd ~/repos/openclaw/.worktrees/lifecycle-hooks/e2e
-PATH=/opt/homebrew/bin:$PATH npx playwright test --config playwright.config.ts --workers=1
-```
-
-## Known caveats
-
-- These tests drive the gateway over the WebKit-originated WebSocket directly,
-  which is the same protocol the SPA uses. They give protocol-level proof of
-  what the UI receives. They do **not** also click into the chat input box or
-  inspect every rendered DOM transition — the SPA's transcript renderer
-  consumes the same frames the test asserts on.
-- The Proximity LLM backend (`http://127.0.0.1:29576/vertex/claude/v1`) must be
-  reachable; if it is down, tests 1, 3, 5, 6, 7, 8 will fail with LLM errors
-  rather than hook outcomes.
-- The dev gateway (19004) and the prod gateway (19003) share `~/.openclaw/`,
-  so the suite uses fresh `sessionKey`s per test to avoid lock contention.
+- `src/plugins/hook-redaction.test.ts` — `redactDuplicateUserMessage` unit tests
+- `e2e/hooks-e2e.spec.ts` — 13 comprehensive WebKit E2E tests
+- `e2e/playwright.config.ts` — WebKit-only config, port 19005
+- `e2e/RESULTS.md` — this file

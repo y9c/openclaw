@@ -1,0 +1,213 @@
+name: Build Caddy SSRF Proxy Binaries
+
+# Builds the pinned Caddy + forwardproxy binary for every supported
+# (os, arch) tuple consumed by `scripts/postinstall-ssrf-caddy.mjs`, then
+# uploads the binaries plus a SHA-256 checksums file as assets on a
+# `caddy-ssrf-vX.Y.Z` GitHub release.
+#
+# Triggers:
+#   * `workflow_dispatch` — manual run; takes an optional `version` override.
+#   * `push` of a tag matching `caddy-ssrf-v*` — automated release flow.
+#
+# The version is sourced from `scripts/caddy-ssrf-version.txt` so the JS
+# postinstall download script and CI agree on what to fetch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Caddy version to build (defaults to scripts/caddy-ssrf-version.txt)"
+        required: false
+        type: string
+      release:
+        description: "Create / upload to a GitHub release"
+        required: false
+        type: boolean
+        default: true
+  push:
+    tags:
+      - "caddy-ssrf-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-caddy-ssrf-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-version:
+    name: Resolve Caddy version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pick version
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${{ inputs.version }}" ]]; then
+            version="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF}" == refs/tags/caddy-ssrf-v* ]]; then
+            version="${GITHUB_REF#refs/tags/caddy-ssrf-v}"
+          else
+            version="$(tr -d '[:space:]' < scripts/caddy-ssrf-version.txt)"
+          fi
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "tag=caddy-ssrf-v$version" >>"$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform_key }}
+    needs: resolve-version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform_key: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            runner: ubuntu-latest
+            ext: ""
+          - platform_key: darwin-x64
+            goos: darwin
+            goarch: amd64
+            runner: ubuntu-latest
+            ext: ""
+          - platform_key: linux-x64
+            goos: linux
+            goarch: amd64
+            runner: ubuntu-latest
+            ext: ""
+          - platform_key: linux-arm64
+            goos: linux
+            goarch: arm64
+            runner: ubuntu-latest
+            ext: ""
+          - platform_key: windows-x64
+            goos: windows
+            goarch: amd64
+            runner: ubuntu-latest
+            ext: ".exe"
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      ASSET_NAME: caddy-ssrf-${{ needs.resolve-version.outputs.version }}-${{ matrix.platform_key }}${{ matrix.ext }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+          check-latest: true
+
+      - name: Install xcaddy
+        shell: bash
+        run: |
+          set -euo pipefail
+          go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+          echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
+
+      - name: Build Caddy + forwardproxy
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          xcaddy build "v${VERSION}" \
+            --with github.com/caddyserver/forwardproxy@caddy2 \
+            --output "dist/${ASSET_NAME}"
+          chmod +x "dist/${ASSET_NAME}" || true
+          ls -la dist/
+
+      - name: Compute checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${ASSET_NAME}" >"${ASSET_NAME}.sha256"
+          else
+            shasum -a 256 "${ASSET_NAME}" >"${ASSET_NAME}.sha256"
+          fi
+          cat "${ASSET_NAME}.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: caddy-ssrf-${{ matrix.platform_key }}
+          path: |
+            dist/${{ env.ASSET_NAME }}
+            dist/${{ env.ASSET_NAME }}.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Aggregate + Release
+    needs: [resolve-version, build]
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || inputs.release }}
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      TAG: ${{ needs.resolve-version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: caddy-ssrf-*
+
+      - name: Assemble release directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          # Flatten downloaded artifacts
+          find artifacts -type f \( -name "caddy-ssrf-*" -a ! -name "*.sha256" \) -exec cp {} release/ \;
+          # Build a single combined checksums file
+          cd release
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum caddy-ssrf-* >"caddy-ssrf-${VERSION}-checksums.txt"
+          else
+            shasum -a 256 caddy-ssrf-* >"caddy-ssrf-${VERSION}-checksums.txt"
+          fi
+          # Strip path prefixes inside the checksums file (sha256sum already
+          # outputs basenames here, but normalize defensively).
+          sed -i.bak -E 's|  \./|  |' "caddy-ssrf-${VERSION}-checksums.txt" || true
+          rm -f "caddy-ssrf-${VERSION}-checksums.txt.bak"
+          ls -la
+          cat "caddy-ssrf-${VERSION}-checksums.txt"
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: Caddy SSRF Proxy v${{ env.VERSION }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+          body: |
+            Pre-built Caddy + forwardproxy binaries consumed by
+            `scripts/postinstall-ssrf-caddy.mjs` to populate
+            `~/.openclaw/bin/caddy-ssrf` during `npm install openclaw`.
+
+            **Version:** Caddy v${{ env.VERSION }} with `github.com/caddyserver/forwardproxy@caddy2`.
+          files: |
+            release/caddy-ssrf-*

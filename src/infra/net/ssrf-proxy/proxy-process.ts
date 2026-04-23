@@ -11,7 +11,10 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
 import { createServer, createConnection } from "node:net";
+import os from "node:os";
+import path from "node:path";
 import { logInfo, logWarn } from "../../../logger.js";
 import { buildCaddySsrFProxyConfigJson } from "./caddy-config.js";
 import type { CaddySsrFProxyConfigOptions } from "./caddy-config.js";
@@ -72,7 +75,12 @@ export async function pickFreeLocalhostPort(): Promise<number> {
 
 /**
  * Resolves the path to the caddy binary.
- * Priority: explicit binaryPath option → OPENCLAW_CADDY_BINARY env var → 'caddy' (from PATH).
+ *
+ * Priority:
+ *   1. Explicit `binaryPath` config option
+ *   2. `OPENCLAW_CADDY_BINARY` environment variable
+ *   3. Auto-downloaded binary at `~/.openclaw/bin/caddy-ssrf` (postinstall)
+ *   4. `caddy` resolved from PATH
  */
 export function resolveCaddyBinaryPath(binaryPath?: string): string {
   if (binaryPath) {
@@ -82,7 +90,36 @@ export function resolveCaddyBinaryPath(binaryPath?: string): string {
   if (typeof envPath === "string" && envPath.trim().length > 0) {
     return envPath.trim();
   }
+  const autoPath = resolveAutoDownloadedCaddyPath();
+  if (autoPath !== null) {
+    return autoPath;
+  }
   return "caddy";
+}
+
+/**
+ * Returns the absolute path to the postinstall-managed Caddy binary if it
+ * exists and is executable, otherwise null.
+ *
+ * Notes:
+ *  - We resolve directly under `os.homedir()/.openclaw/bin` rather than
+ *    threading the state-dir helper. The bin dir is intentionally a peer of
+ *    the openclaw state directory so the binary is not commingled with
+ *    session/log artifacts.
+ *  - On Windows we look for the `.exe` variant.
+ *  - `accessSync(..., X_OK)` is best-effort: on Windows X_OK collapses to
+ *    F_OK, but the symlink/copy created by the postinstall script is always
+ *    invoked with execute-bit set on POSIX, so this is the right gate.
+ */
+function resolveAutoDownloadedCaddyPath(): string | null {
+  const binaryName = process.platform === "win32" ? "caddy-ssrf.exe" : "caddy-ssrf";
+  const candidate = path.join(os.homedir(), ".openclaw", "bin", binaryName);
+  try {
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return candidate;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -263,7 +300,7 @@ export async function startCaddyProxy(options: CaddyProcessOptions): Promise<Cad
     if (spawnError) {
       throw new Error(
         `ssrf-proxy: failed to spawn caddy binary "${binaryPath}": ${String(spawnError)}`,
-        { cause: spawnError },
+        { cause: err },
       );
     }
     throw err;

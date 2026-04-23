@@ -61,21 +61,47 @@ shared service), consider supplementing with OS-level firewall rules
 (e.g. `iptables`/`nftables` on Linux, `pf` on macOS) to block outbound
 connections to private ranges from the openclaw process uid/gid.
 
-## Prerequisites
+## Installation
 
-The Caddy proxy requires the **[caddy-forwardproxy](https://github.com/caddyserver/forwardproxy)** plugin. Standard `caddy` distributions do not include this plugin by default.
+The Caddy + `forwardproxy` binary is **downloaded automatically during `npm install openclaw`** into `~/.openclaw/bin/caddy-ssrf`. You do not need to install Caddy yourself or have the Go toolchain on your machine — the openclaw postinstall step (`scripts/postinstall-ssrf-caddy.mjs`) fetches a pinned, checksum-verified pre-built binary from the openclaw GitHub releases.
 
-### Installing Caddy with forwardproxy
+The binary resolution order at startup is:
+
+1. `ssrfProxy.binaryPath` (explicit config)
+2. `OPENCLAW_CADDY_BINARY` environment variable
+3. `~/.openclaw/bin/caddy-ssrf` (the auto-downloaded binary)
+4. `caddy` resolved from `PATH` (system fallback)
+
+If none of those produce a working Caddy + `forwardproxy` binary, openclaw degrades gracefully to application-level SSRF guards only and logs a warning at startup.
+
+### Skipping or recovering the auto-download
+
+- Set `OPENCLAW_SKIP_CADDY_DOWNLOAD=1` before `npm install` to opt out entirely (useful for CI, Docker images you build separately, or airgapped environments).
+- Set `OPENCLAW_NIX_MODE=1` to opt out and signal that the binary is managed via Nix instead.
+- If the postinstall download was blocked or failed, you can re-run it any time with:
+
+  ```bash
+  node ./node_modules/openclaw/scripts/postinstall-ssrf-caddy.mjs
+  ```
+
+  The script is idempotent, checksum-verified, and never errors out — failures only emit warnings.
+
+<details>
+<summary>Advanced: build Caddy with forwardproxy yourself</summary>
+
+If you need a custom build (different Caddy version, additional plugins, an unsupported platform, or a fully airgapped install), build Caddy yourself and either drop the binary at `~/.openclaw/bin/caddy-ssrf` or point `ssrfProxy.binaryPath` / `OPENCLAW_CADDY_BINARY` at it.
 
 **Option 1 — Build with xcaddy:**
 
 ```bash
-xcaddy build --with github.com/caddyserver/forwardproxy
+xcaddy build --with github.com/caddyserver/forwardproxy@caddy2
 sudo mv caddy /usr/local/bin/caddy
 ```
 
 **Option 2 — Download a pre-built binary:**
 Visit [caddyserver.com/download](https://caddyserver.com/download) and add the `github.com/caddyserver/forwardproxy` plugin.
+
+</details>
 
 ## Configuration
 
@@ -206,9 +232,11 @@ ssrfProxy:
 
 ## Environment Variables
 
-| Variable                | Description                                                               |
-| ----------------------- | ------------------------------------------------------------------------- |
-| `OPENCLAW_CADDY_BINARY` | Override path to the caddy binary (alternative to `ssrfProxy.binaryPath`) |
+| Variable                       | Description                                                                                    |
+| ------------------------------ | ---------------------------------------------------------------------------------------------- |
+| `OPENCLAW_CADDY_BINARY`        | Override path to the caddy binary (alternative to `ssrfProxy.binaryPath`)                      |
+| `OPENCLAW_SKIP_CADDY_DOWNLOAD` | Set to `1` to skip the postinstall Caddy download (CI, Docker, airgapped)                      |
+| `OPENCLAW_NIX_MODE`            | Set to `1` when openclaw is managed by Nix; the postinstall download is skipped with a message |
 
 ## Security Notes
 

@@ -244,8 +244,14 @@ export async function startSsrFProxy(
     logWarn(
       `ssrf-proxy: failed to start Caddy — falling back to application-level SSRF guards only.\n` +
         `  Reason: ${String(err)}\n` +
-        `  To suppress this warning, set 'ssrfProxy.enabled: false' in your openclaw config,\n` +
-        `  or install caddy (https://caddyserver.com/docs/install) with the forwardproxy plugin.`,
+        `  The Caddy + forwardproxy binary is normally downloaded automatically during 'npm install openclaw'\n` +
+        `  into '~/.openclaw/bin/caddy-ssrf'. If that download was skipped, blocked, or failed, you can\n` +
+        `  recover by re-running the postinstall script:\n` +
+        `      node ./node_modules/openclaw/scripts/postinstall-ssrf-caddy.mjs\n` +
+        `  Or install caddy with the forwardproxy plugin manually and point 'ssrfProxy.binaryPath'\n` +
+        `  (or OPENCLAW_CADDY_BINARY) at it. To suppress this warning entirely, set\n` +
+        `  'ssrfProxy.enabled: false' in your openclaw config. See:\n` +
+        `      https://docs.openclaw.ai/security/ssrf-proxy`,
     );
     return null;
   }

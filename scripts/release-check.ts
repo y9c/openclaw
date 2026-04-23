@@ -52,6 +52,8 @@ const requiredPathGroups = [
   "scripts/npm-runner.mjs",
   "scripts/preinstall-package-manager-warning.mjs",
   "scripts/postinstall-bundled-plugins.mjs",
+  "scripts/postinstall-ssrf-caddy.mjs",
+  "scripts/caddy-ssrf-version.txt",
   "dist/plugin-sdk/compat.js",
   "dist/plugin-sdk/root-alias.cjs",
   "dist/build-info.json",

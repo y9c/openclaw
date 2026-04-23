@@ -427,7 +427,12 @@ function handleChatGatewayEvent(host: GatewayHost, payload: ChatEventPayload | u
   if (deferredSessionKey && payloadSessionKey && deferredSessionKey === payloadSessionKey) {
     deferredReloadHost.pendingSessionMessageReloadSessionKey = null;
   }
-  if (state === "final" && !historyReloaded && shouldReloadHistoryForFinalEvent(payload)) {
+  // Reload history on any terminal chat state (final/error/aborted) so that
+  // hook-block paths — which emit `state: "error"` (errorKind="hook_block")
+  // and persist the policy replacement message to disk — show the block
+  // warning in the assistant bubble instead of leaving the streamed (now
+  // redacted) text or an empty bubble in the transcript.
+  if (isTerminalChatState(state) && !historyReloaded && shouldReloadHistoryForFinalEvent(payload)) {
     void loadChatHistory(host as unknown as ChatState);
     return;
   }

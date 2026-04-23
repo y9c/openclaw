@@ -246,6 +246,25 @@ export function normalizeMessage(message: unknown): NormalizedMessage {
   const m = message as Record<string, unknown>;
   let role = typeof m.role === "string" ? m.role : "unknown";
 
+  // For user messages blocked by a pre-LLM hook, the agent transcript only
+  // contains the policy stub in `message.content`. The human's original input
+  // is stashed in `__openclaw.originalBlockedContent.content` (set by
+  // appendBlockedUserMessageToSessionTranscript). Prefer the original for
+  // display — the human should see what they typed, not the policy notice.
+  if (role === "user") {
+    const oc = m.__openclaw as Record<string, unknown> | undefined;
+    const obc = oc?.originalBlockedContent as { content?: unknown } | undefined;
+    if (obc && Array.isArray(obc.content) && obc.content.length > 0) {
+      // Reconstruct a synthetic message with the original content for normalization.
+      // The rest of the fields (role, timestamp, etc.) stay intact.
+      const patched = { ...m, content: obc.content };
+      patched.__openclaw = oc; // preserve meta
+      message = patched;
+      // Re-bind m so the rest of the function sees the patched content.
+      Object.assign(m, { content: obc.content });
+    }
+  }
+
   // Detect tool messages by common gateway shapes.
   // Some tool events come through as assistant role with tool_* items in the content array.
   const hasToolId = typeof m.toolCallId === "string" || typeof m.tool_call_id === "string";

@@ -44,4 +44,20 @@ describe("shouldReloadHistoryForFinalEvent", () => {
       }),
     ).toBe(true);
   });
+
+  it("returns true when state is `error` (hook-block path persists policy reply on disk)", () => {
+    // Regression: hook-block on llm_output emits `state: "error"` (errorKind="hook_block")
+    // and the runner persists the policy replacement message. The SPA must
+    // refetch chat.history so the assistant bubble shows the block warning
+    // instead of the streamed (now-redacted) text or an empty bubble.
+    expect(
+      shouldReloadHistoryForFinalEvent({
+        runId: "run-1",
+        sessionKey: "main",
+        state: "error",
+        errorKind: "hook_block",
+        errorMessage: "🔒 [hook-echo] blocked by policy",
+      } as Parameters<typeof shouldReloadHistoryForFinalEvent>[0]),
+    ).toBe(true);
+  });
 });

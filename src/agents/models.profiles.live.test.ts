@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { loadConfig } from "../config/config.js";
 import { parseLiveCsvFilter } from "../media-generation/live-test-helpers.js";
+import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
 import { resolveOpenClawAgentDir } from "./agent-paths.js";
 import {
   collectAnthropicApiKeys,
@@ -710,11 +711,11 @@ describeLive("live models (profile keys)", () => {
       }
       logProgress(`[live-models] running ${selectedCandidates.length} models`);
       logProgress(
-        `[live-models] heartbeat=${formatElapsedSeconds(LIVE_HEARTBEAT_MS)} timeout=${formatElapsedSeconds(perModelTimeoutMs)}`,
+        `[live-models] heartbeat=${formatElapsedSeconds(LIVE_HEARTBEAT_MS)} timeout=${formatElapsedSeconds(perModelTimeoutMs)} concurrency=${LIVE_MODEL_CONCURRENCY}`,
       );
       const total = selectedCandidates.length;
 
-      for (const [index, entry] of selectedCandidates.entries()) {
+      const tasks = selectedCandidates.map((entry, index) => async () => {
         const { model, apiKeyInfo } = entry;
         const id = `${model.provider}/${model.id}`;
         const progressLabel = `[live-models] ${index + 1}/${total} ${id}`;
@@ -1074,7 +1075,12 @@ describeLive("live models (profile keys)", () => {
             break;
           }
         }
-      }
+      });
+
+      await runTasksWithConcurrency({
+        tasks,
+        limit: LIVE_MODEL_CONCURRENCY,
+      });
 
       if (failures.length > 0) {
         const preview = formatFailurePreview(failures, 20);
@@ -1085,6 +1091,6 @@ describeLive("live models (profile keys)", () => {
 
       void skipped;
     },
-    15 * 60 * 1000,
+    LIVE_TEST_TIMEOUT_MS,
   );
 });

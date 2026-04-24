@@ -363,6 +363,44 @@ function findGuardianReviewStatus(events: CapturedAgentEvent[]): "approved" | "d
   return status === "approved" || status === "denied" ? status : undefined;
 }
 
+function assertGuardianReviewStatus(params: {
+  events: CapturedAgentEvent[];
+  expectedStatus: "approved" | "denied";
+  label: string;
+}): void {
+  const completedEvents = params.events.filter(
+    (event) => event.data?.phase === "completed" && event.data?.status,
+  );
+  if (completedEvents.length === 0 && !CODEX_HARNESS_REQUIRE_GUARDIAN_EVENTS) {
+    return;
+  }
+  expect(
+    completedEvents.some((event) => event.data?.status === params.expectedStatus),
+    `${params.label} expected Guardian status ${params.expectedStatus}; events=${JSON.stringify(
+      params.events,
+    )}`,
+  ).toBe(true);
+}
+
+function assertGuardianReviewCompleted(params: {
+  events: CapturedAgentEvent[];
+  label: string;
+}): CapturedAgentEvent | undefined {
+  const completedEvents = params.events.filter(
+    (event) => event.data?.phase === "completed" && event.data?.status,
+  );
+  if (completedEvents.length === 0 && !CODEX_HARNESS_REQUIRE_GUARDIAN_EVENTS) {
+    return undefined;
+  }
+  expect(
+    completedEvents.length,
+    `${params.label} expected a completed Guardian review event; events=${JSON.stringify(
+      params.events,
+    )}`,
+  ).toBeGreaterThan(0);
+  return completedEvents.at(-1);
+}
+
 async function verifyCodexGuardianProbe(params: {
   client: GatewayClient;
   sessionKey: string;

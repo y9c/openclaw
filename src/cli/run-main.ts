@@ -8,7 +8,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeEnv } from "../infra/env.js";
 import { formatUncaughtError } from "../infra/errors.js";
 import { isMainModule } from "../infra/is-main.js";
-import { initSsrFProxyFromConfig, stopSsrFProxy } from "../infra/net/ssrf-proxy/startup-hook.js";
+import { startSsrFProxy, stopSsrFProxy } from "../infra/net/ssrf-proxy/proxy-lifecycle.js";
 import { ensureGlobalUndiciEnvProxyDispatcher } from "../infra/net/undici-global-dispatcher.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { assertSupportedRuntime } from "../infra/runtime-guard.js";
@@ -199,11 +199,18 @@ export async function runCli(argv: string[] = process.argv) {
   //   - If ssrfProxy is disabled or Caddy is missing, it logs a warning and
   //     openclaw continues with application-level guards only.
   // The handle is captured so we can shut Caddy down on exit.
-  let ssrfProxyHandle: Awaited<ReturnType<typeof initSsrFProxyFromConfig>> = null;
+  let ssrfProxyHandle: Awaited<ReturnType<typeof startSsrFProxy>> = null;
+  const stopStartedSsrFProxy = async () => {
+    const handle = ssrfProxyHandle;
+    ssrfProxyHandle = null;
+    if (handle) {
+      await stopSsrFProxy(handle);
+    }
+  };
   try {
     const { loadConfig } = await import("../config/io.js");
     const config = loadConfig();
-    ssrfProxyHandle = await initSsrFProxyFromConfig(config);
+    ssrfProxyHandle = await startSsrFProxy(config?.ssrfProxy ?? undefined);
   } catch {
     // Config load may fail for many CLI commands that don't need it (e.g.
     // help, version). Don't block startup — application-level guards remain.
@@ -218,12 +225,24 @@ export async function runCli(argv: string[] = process.argv) {
   // will reap the child Caddy process when openclaw's pid dies anyway
   // (Caddy is spawned without `detached: true`, so it shares our process
   // group and will not be re-parented to init).
+  let onSigterm: (() => void) | null = null;
+  let onSigint: (() => void) | null = null;
   if (ssrfProxyHandle) {
-    const shutdown = () => {
-      void stopSsrFProxy(ssrfProxyHandle);
+    const shutdown = (exitCode: number) => {
+      if (onSigterm) {
+        process.off("SIGTERM", onSigterm);
+      }
+      if (onSigint) {
+        process.off("SIGINT", onSigint);
+      }
+      void stopStartedSsrFProxy().finally(() => {
+        process.exit(exitCode);
+      });
     };
-    process.once("SIGTERM", shutdown);
-    process.once("SIGINT", shutdown);
+    onSigterm = () => shutdown(143);
+    onSigint = () => shutdown(130);
+    process.once("SIGTERM", onSigterm);
+    process.once("SIGINT", onSigint);
   }
 
   try {
@@ -323,6 +342,13 @@ export async function runCli(argv: string[] = process.argv) {
       process.exitCode = error.exitCode;
     }
   } finally {
+    if (onSigterm) {
+      process.off("SIGTERM", onSigterm);
+    }
+    if (onSigint) {
+      process.off("SIGINT", onSigint);
+    }
+    await stopStartedSsrFProxy();
     await closeCliMemoryManagers();
   }
 }

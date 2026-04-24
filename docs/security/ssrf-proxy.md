@@ -1,6 +1,6 @@
 # SSRF Network Proxy
 
-openclaw ships with a **network-level SSRF (Server-Side Request Forgery) protection layer** powered by a [Caddy](https://caddyserver.com/) forward proxy sidecar. This is a defence-in-depth complement to the application-level `fetchWithSsrFGuard` DNS-pinning mechanism.
+openclaw can run a **network-level SSRF (Server-Side Request Forgery) protection layer** powered by a [Caddy](https://caddyserver.com/) forward proxy sidecar. This opt-in layer is a defence-in-depth complement to the application-level `fetchWithSsrFGuard` DNS-pinning mechanism.
 
 ## Why a Network-Level Proxy?
 
@@ -40,12 +40,11 @@ Bootstrapping order at startup:
 2. openclaw injects:
    - `http_proxy` / `https_proxy` + `HTTP_PROXY` / `HTTPS_PROXY` (Layer A — lowercase read by undici's `EnvHttpProxyAgent`; uppercase read by axios, curl, git, and most other HTTP clients)
    - `GLOBAL_AGENT_HTTP_PROXY` / `GLOBAL_AGENT_HTTPS_PROXY` (Layer B — picked up by `global-agent`)
-   - `no_proxy` / `NO_PROXY` / `GLOBAL_AGENT_NO_PROXY` (loopback exclusions)
+   - `no_proxy` / `NO_PROXY` / `GLOBAL_AGENT_NO_PROXY` are cleared so loopback and other internal destinations still pass through Caddy's ACL.
 3. `forceResetGlobalDispatcher()` activates Layer A.
 4. `bootstrap()` from `global-agent` activates Layer B.
-5. From this point, **every** outbound HTTP request from any code in the process
-   flows through Caddy.
-6. On shutdown, env vars are removed and Caddy is gracefully stopped.
+5. From this point, outbound HTTP requests from the process flow through Caddy.
+6. On shutdown, the previous proxy env vars are restored and Caddy is gracefully stopped.
 
 ### What's NOT Covered
 
@@ -110,8 +109,8 @@ All options are under the `ssrfProxy` key in your openclaw config file:
 
 ```yaml
 ssrfProxy:
-  # Whether to enable the network-level proxy. Default: true.
-  # Set to false to rely solely on application-level SSRF guards.
+  # Whether to enable the network-level proxy. Default: false.
+  # Set to true to add the Caddy sidecar in front of outbound HTTP.
   enabled: true
 
   # Optional: path to the caddy binary.
@@ -126,10 +125,6 @@ ssrfProxy:
   # These bypass the CIDR blocklists — use sparingly.
   extraAllowedHosts:
     - internal-api.corp.example.com
-
-  # Optional: upstream proxy URL for corporate proxy environments.
-  # Caddy will forward requests through this proxy instead of connecting directly.
-  userProxy: http://proxy.corp.example.com:8080
 ```
 
 > ⚠️ **Security warning — `extraAllowedHosts` is a DNS resolution footgun**
@@ -160,35 +155,7 @@ ssrfProxy:
 > openclaw additionally logs a runtime warning at startup whenever
 > `extraAllowedHosts` is non-empty so the operator is reminded of this risk.
 
-> ⚠️ **Security warning — `userProxy` transfers SSRF trust to the upstream**
->
-> When `userProxy` is set, Caddy forwards every outbound request to the
-> configured upstream proxy instead of connecting directly to the target.
-> openclaw can no longer enforce its own IP blocklist on the final hop —
-> the upstream proxy decides what destinations are reachable.
->
-> This means:
->
-> - The upstream proxy **must enforce equivalent SSRF protections** (block
->   RFC-1918, loopback, link-local, cloud metadata, etc.). If it does not,
->   openclaw's network-level SSRF protection is effectively bypassed for
->   any traffic that flows through it.
-> - The upstream proxy can see all openclaw outbound HTTP destinations and
->   (for plain HTTP) request bodies. Treat it as a fully privileged
->   network intermediary.
-> - Compromise of the upstream proxy is equivalent to compromise of
->   openclaw's outbound network policy.
->
-> Only set `userProxy` when:
->
-> - The upstream proxy is operated by your organisation (or a trusted
->   third party with a documented SSRF posture), AND
-> - You have verified that it blocks the same internal address ranges
->   openclaw blocks by default.
->
-> If you only need to allow a few hostnames through openclaw's filter,
-> prefer `extraAllowedHosts` (with the caveats above) instead of routing
-> all traffic via an external proxy.
+If `HTTP_PROXY` or `HTTPS_PROXY` is already set when openclaw starts, the Caddy sidecar is skipped. That avoids replacing an operator-managed corporate proxy until upstream proxy chaining can preserve Caddy ACL enforcement.
 
 ## Default Blocked Ranges
 
@@ -203,12 +170,21 @@ The following IP ranges are blocked by default:
 | `172.16.0.0/12`  | RFC-1918 private                                              |
 | `192.168.0.0/16` | RFC-1918 private                                              |
 | `100.64.0.0/10`  | CGNAT / shared address space                                  |
+| `198.18.0.0/15`  | RFC 2544 benchmarking range                                   |
 | `224.0.0.0/4`    | IPv4 multicast                                                |
 | `240.0.0.0/4`    | IPv4 reserved                                                 |
 | `::1/128`        | IPv6 loopback                                                 |
+| `::/128`         | IPv6 unspecified                                              |
+| `100::/64`       | IPv6 discard prefix                                           |
 | `fe80::/10`      | IPv6 link-local                                               |
 | `fc00::/7`       | IPv6 ULA (private)                                            |
+| `fec0::/10`      | Deprecated IPv6 site-local                                    |
 | `ff00::/8`       | IPv6 multicast                                                |
+| `2001:2::/48`    | IPv6 benchmarking range                                       |
+| `2001:20::/28`   | IPv6 ORCHIDv2                                                 |
+| `64:ff9b:1::/48` | NAT64 local-use prefix                                        |
+| `2002::/16`      | 6to4 prefix with embedded IPv4                                |
+| `2001::/32`      | Teredo prefix with embedded IPv4                              |
 | `::ffff:0:0/96`  | IPv4-mapped IPv6 (e.g. `::ffff:7f00:1` form of `127.0.0.1`)   |
 
 The following hostnames are always blocked regardless of their resolved IP:
@@ -224,11 +200,11 @@ If Caddy is not installed or fails to start, openclaw **does not crash**. Instea
 1. A warning is logged explaining how to install Caddy.
 2. openclaw continues operating with the existing application-level `fetchWithSsrFGuard` protections.
 
-To suppress the warning if you intentionally don't want the proxy:
+To enable the proxy:
 
 ```yaml
 ssrfProxy:
-  enabled: false
+  enabled: true
 ```
 
 ## Environment Variables
@@ -244,4 +220,4 @@ ssrfProxy:
 - The Caddy sidecar listens **only on the loopback interface** (`127.0.0.1`), not on any external network interface.
 - Caddy's admin API is **disabled** — there is no management surface.
 - The proxy does **not** log request contents — only warnings for blocked requests.
-- Both the network-level (Caddy) and application-level (`fetchWithSsrFGuard`) protections are active simultaneously, providing defence-in-depth.
+- When enabled, both the network-level (Caddy) and application-level (`fetchWithSsrFGuard`) protections are active simultaneously, providing defence-in-depth.

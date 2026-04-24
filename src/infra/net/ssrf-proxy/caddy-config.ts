@@ -24,18 +24,36 @@ export const DEFAULT_BLOCKED_CIDRS: readonly string[] = [
   "192.168.0.0/16",
   // CGNAT / shared address space (RFC 6598)
   "100.64.0.0/10",
+  // RFC 2544 benchmarking range
+  "198.18.0.0/15",
   // IPv4 multicast
   "224.0.0.0/4",
   // IPv4 reserved / broadcast
   "240.0.0.0/4",
   // IPv6 loopback
   "::1/128",
+  // IPv6 unspecified
+  "::/128",
+  // IPv6 discard prefix
+  "100::/64",
   // IPv6 link-local
   "fe80::/10",
   // IPv6 ULA (unique local addresses – private)
   "fc00::/7",
+  // Deprecated IPv6 site-local
+  "fec0::/10",
   // IPv6 multicast
   "ff00::/8",
+  // IPv6 benchmarking range
+  "2001:2::/48",
+  // IPv6 ORCHIDv2
+  "2001:20::/28",
+  // NAT64 local-use prefix with embedded IPv4
+  "64:ff9b:1::/48",
+  // 6to4 prefix with embedded IPv4
+  "2002::/16",
+  // Teredo prefix with embedded IPv4
+  "2001::/32",
   // IPv4-mapped IPv6 addresses
   "::ffff:0:0/96",
 ];
@@ -56,37 +74,14 @@ export type CaddySsrFProxyConfigOptions = {
    */
   extraBlockedCidrs?: string[];
   /**
-   * Hostnames that should be explicitly allowed through, even if they
-   * resolve to addresses that would otherwise be blocked (e.g. corp internal).
-   * These are inserted as ALLOW rules before the deny rules.
-   *
-   * ⚠️ SECURITY WARNING — DNS RESOLUTION FOOTGUN ⚠️
-   * Hosts listed here BYPASS ALL IP-based deny rules (RFC-1918, loopback,
-   * link-local, cloud metadata IPs, etc.). The ACL evaluation order is:
-   *   1. ALLOW(extraAllowedHosts)  ← short-circuits all deny rules below
-   *   2. DENY(blocked CIDRs + hostnames)
-   *   3. ALLOW(all)
-   *
-   * This means an attacker who controls DNS for an allowed hostname (DNS
-   * hijacking, compromised DNS provider, MITM on resolver, takeover of a
-   * dangling subdomain) can point it at `127.0.0.1`, `169.254.169.254`
-   * (cloud metadata), or any other internal address and the request will
-   * succeed despite the IP blocklist.
-   *
-   * Use ONLY for hostnames that:
-   *   - Resolve via a trusted, authenticated DNS path (e.g. internal DNS)
-   *   - You fully control or have explicit reason to trust
-   *   - Cannot be silently re-pointed by an attacker
-   *
-   * If you need to allow an internal service that resolves to an RFC-1918
-   * address, prefer pinning the destination at the network layer (host
-   * file, internal CA, mTLS) rather than relying on DNS-based allow.
+   * Hostnames allowed before IP deny rules run. Only use for names with a
+   * trusted DNS path, because a hijacked allowed hostname can point at an
+   * otherwise-blocked internal address.
    */
   extraAllowedHosts?: string[];
   /**
-   * If set, Caddy will forward requests to this upstream proxy URL rather
-   * than connecting directly to the target. Useful when openclaw itself is
-   * behind a corporate proxy.
+   * Reserved until upstream chaining can preserve ACL enforcement. Passing a
+   * value currently throws instead of generating an unsafe Caddy config.
    */
   upstreamProxy?: string;
 };
@@ -106,38 +101,31 @@ export type CaddySsrFProxyConfigOptions = {
 export function buildCaddySsrFProxyConfig(options: CaddySsrFProxyConfigOptions): object {
   const { port, extraBlockedCidrs = [], extraAllowedHosts = [], upstreamProxy } = options;
 
+  if (upstreamProxy) {
+    throw new Error("ssrf-proxy: upstream proxy mode is incompatible with Caddy ACL enforcement");
+  }
+
   const blockedCidrs = [...DEFAULT_BLOCKED_CIDRS, ...extraBlockedCidrs];
 
-  // Build ACL rules — caddy-forwardproxy uses {subjects: [...], allow: bool}
-  // Rules are evaluated top-to-bottom; first match wins. Default if no match: deny.
   const acl: object[] = [];
 
-  // 1. Explicit ALLOW rules for user-trusted hosts (highest precedence)
   if (extraAllowedHosts.length > 0) {
     acl.push({ subjects: [...extraAllowedHosts], allow: true });
   }
 
-  // 2. DENY rules: blocked hostnames + private/loopback/link-local CIDRs
   acl.push({
     subjects: [...DEFAULT_BLOCKED_HOSTNAMES, ...blockedCidrs],
     allow: false,
   });
 
-  // 3. Final ALLOW-ALL: everything else through to the public internet
   acl.push({ subjects: ["all"], allow: true });
 
   const handlerConfig: Record<string, unknown> = {
     handler: "forward_proxy",
-    // Do not leak the client's real IP in X-Forwarded-For to the target
     hide_ip: true,
-    // Do not send a Via header identifying this as a Caddy proxy
     hide_via: true,
     acl,
   };
-
-  if (upstreamProxy) {
-    handlerConfig.upstream = upstreamProxy;
-  }
 
   return {
     apps: {
@@ -146,7 +134,6 @@ export function buildCaddySsrFProxyConfig(options: CaddySsrFProxyConfigOptions):
           "ssrf-proxy": {
             listen: [`127.0.0.1:${port}`],
             logs: {
-              // Route access logs into Caddy's structured logger
               default_logger_name: "openclaw-ssrf-proxy",
             },
             routes: [
@@ -157,8 +144,6 @@ export function buildCaddySsrFProxyConfig(options: CaddySsrFProxyConfigOptions):
           },
         },
       },
-      // Disable Caddy's admin API entirely — no management surface needed
-      // and we don't want an additional listener.
     },
     admin: {
       disabled: true,
@@ -167,7 +152,6 @@ export function buildCaddySsrFProxyConfig(options: CaddySsrFProxyConfigOptions):
       logs: {
         "openclaw-ssrf-proxy": {
           writer: {
-            // Write to stderr so openclaw can capture and relay it
             output: "stderr",
           },
           encoder: {

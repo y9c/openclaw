@@ -28,7 +28,7 @@ export function createVictimServer(): VictimServer {
     hits.push({
       method: req.method ?? "GET",
       url: req.url ?? "",
-      host: String(req.headers["host"] ?? ""),
+      host: req.headers["host"] ?? "",
     });
     res.setHeader("Connection", "close");
     res.writeHead(200, { "Content-Type": "text/plain" });

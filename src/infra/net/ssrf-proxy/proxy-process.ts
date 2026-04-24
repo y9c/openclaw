@@ -45,6 +45,7 @@ export type CaddyProxyHandle = {
 const CADDY_STARTUP_TIMEOUT_MS = 10_000;
 const CADDY_HEALTHCHECK_INTERVAL_MS = 500;
 const CADDY_GRACEFUL_STOP_TIMEOUT_MS = 5_000;
+const CADDY_STARTUP_ATTEMPTS = 3;
 
 /**
  * Picks a random free TCP port on the loopback interface.
@@ -172,9 +173,30 @@ async function waitForCaddyReady(params: {
  * Throws if caddy is not found or fails to start within the timeout.
  */
 export async function startCaddyProxy(options: CaddyProcessOptions): Promise<CaddyProxyHandle> {
-  const port = await pickFreeLocalhostPort();
   const binaryPath = resolveCaddyBinaryPath(options.binaryPath);
+  let lastError: unknown;
 
+  for (let attempt = 1; attempt <= CADDY_STARTUP_ATTEMPTS; attempt++) {
+    const port = await pickFreeLocalhostPort();
+    try {
+      return await startCaddyProxyOnPort(options, binaryPath, port);
+    } catch (err) {
+      lastError = err;
+      if (!isAddressInUseStartupError(err) || attempt === CADDY_STARTUP_ATTEMPTS) {
+        throw err;
+      }
+      logWarn(`ssrf-proxy: Caddy port ${port} was claimed during startup; retrying`);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+async function startCaddyProxyOnPort(
+  options: CaddyProcessOptions,
+  binaryPath: string,
+  port: number,
+): Promise<CaddyProxyHandle> {
   const configJson = buildCaddySsrFProxyConfigJson({
     port,
     extraBlockedCidrs: options.extraBlockedCidrs,
@@ -185,6 +207,7 @@ export async function startCaddyProxy(options: CaddyProcessOptions): Promise<Cad
   logInfo(`ssrf-proxy: starting Caddy on 127.0.0.1:${port} (binary: ${binaryPath})`);
 
   let proc: ChildProcess;
+  const stderrLines: string[] = [];
   try {
     proc = spawn(binaryPath, ["run", "--config", "-"], {
       // Pass config via stdin
@@ -238,6 +261,7 @@ export async function startCaddyProxy(options: CaddyProcessOptions): Promise<Cad
   proc.stderr?.on("data", (chunk: Buffer) => {
     const line = chunk.toString().trim();
     if (line) {
+      stderrLines.push(line);
       logWarn(`ssrf-proxy [caddy]: ${line}`);
     }
   });
@@ -303,7 +327,7 @@ export async function startCaddyProxy(options: CaddyProcessOptions): Promise<Cad
         { cause: err },
       );
     }
-    throw err;
+    throw withCaddyStderr(err, stderrLines);
   } finally {
     if (spawnErrorListener) {
       proc.off("error", spawnErrorListener);
@@ -343,4 +367,17 @@ export async function startCaddyProxy(options: CaddyProcessOptions): Promise<Cad
   };
 
   return { port, proxyUrl, pid: proc.pid, stop };
+}
+
+function withCaddyStderr(err: unknown, stderrLines: string[]): Error {
+  const base = err instanceof Error ? err : new Error(String(err));
+  if (stderrLines.length === 0) {
+    return base;
+  }
+  return new Error(`${base.message}\n${stderrLines.join("\n")}`, { cause: base });
+}
+
+function isAddressInUseStartupError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /EADDRINUSE|address already in use|bind: address/u.test(message);
 }

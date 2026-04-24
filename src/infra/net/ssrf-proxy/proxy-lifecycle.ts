@@ -44,6 +44,8 @@ import {
 export type SsrFProxyHandle = CaddyProxyHandle & {
   /** The proxy URL that was injected into process.env */
   injectedProxyUrl: string;
+  /** Original proxy-related environment values, restored on stop/crash. */
+  envSnapshot: ProxyEnvSnapshot;
 };
 
 /**
@@ -59,6 +61,10 @@ export type SsrFProxyHandle = CaddyProxyHandle & {
  */
 const PROXY_ENV_KEYS = ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"] as const;
 const GLOBAL_AGENT_PROXY_KEYS = ["GLOBAL_AGENT_HTTP_PROXY", "GLOBAL_AGENT_HTTPS_PROXY"] as const;
+const NO_PROXY_ENV_KEYS = ["no_proxy", "NO_PROXY", "GLOBAL_AGENT_NO_PROXY"] as const;
+const ALL_PROXY_ENV_KEYS = [...PROXY_ENV_KEYS, ...GLOBAL_AGENT_PROXY_KEYS, ...NO_PROXY_ENV_KEYS];
+type ProxyEnvKey = (typeof ALL_PROXY_ENV_KEYS)[number];
+type ProxyEnvSnapshot = Record<ProxyEnvKey, string | undefined>;
 
 /** Whether global-agent has already been bootstrapped in this process */
 let globalAgentBootstrapped = false;
@@ -71,16 +77,18 @@ export function _resetGlobalAgentBootstrapForTests(): void {
   globalAgentBootstrapped = false;
 }
 
-/**
- * Hosts that should always bypass the proxy — the loopback itself plus
- * any existing NO_PROXY entries from the operator environment.
- */
-function buildNoProxy(existingNoProxy: string | undefined): string {
-  const parts: string[] = ["127.0.0.1", "::1", "localhost"];
-  if (existingNoProxy) {
-    parts.push(existingNoProxy);
-  }
-  return parts.join(",");
+function captureProxyEnv(): ProxyEnvSnapshot {
+  return {
+    http_proxy: process.env["http_proxy"],
+    https_proxy: process.env["https_proxy"],
+    HTTP_PROXY: process.env["HTTP_PROXY"],
+    HTTPS_PROXY: process.env["HTTPS_PROXY"],
+    GLOBAL_AGENT_HTTP_PROXY: process.env["GLOBAL_AGENT_HTTP_PROXY"],
+    GLOBAL_AGENT_HTTPS_PROXY: process.env["GLOBAL_AGENT_HTTPS_PROXY"],
+    no_proxy: process.env["no_proxy"],
+    NO_PROXY: process.env["NO_PROXY"],
+    GLOBAL_AGENT_NO_PROXY: process.env["GLOBAL_AGENT_NO_PROXY"],
+  };
 }
 
 /**
@@ -89,7 +97,8 @@ function buildNoProxy(existingNoProxy: string | undefined): string {
  *  - HTTP_PROXY/HTTPS_PROXY (uppercase) → axios, curl, git, child processes
  *  - GLOBAL_AGENT_HTTP/HTTPS_PROXY      → global-agent bootstrap (Layer B)
  */
-function injectProxyEnv(proxyUrl: string): void {
+function injectProxyEnv(proxyUrl: string): ProxyEnvSnapshot {
+  const snapshot = captureProxyEnv();
   // Layer A + general client compatibility (lowercase + uppercase)
   for (const key of PROXY_ENV_KEYS) {
     process.env[key] = proxyUrl;
@@ -98,29 +107,47 @@ function injectProxyEnv(proxyUrl: string): void {
   for (const key of GLOBAL_AGENT_PROXY_KEYS) {
     process.env[key] = proxyUrl;
   }
-  // NO_PROXY: preserve any operator-supplied value and add loopback exclusions
-  const existingNoProxy = process.env["no_proxy"] ?? process.env["NO_PROXY"];
-  const noProxy = buildNoProxy(existingNoProxy);
-  process.env["no_proxy"] = noProxy;
-  process.env["NO_PROXY"] = noProxy;
-  process.env["GLOBAL_AGENT_NO_PROXY"] = noProxy;
+  // NO_PROXY is target-based. Leaving loopback or operator-provided bypasses
+  // here would let those destinations skip the Caddy ACL entirely.
+  for (const key of NO_PROXY_ENV_KEYS) {
+    process.env[key] = "";
+  }
+  return snapshot;
 }
 
 /**
- * Removes the proxy URL from process.env when the proxy stops.
+ * Restores proxy-related process.env entries when the proxy stops.
  * This is best-effort; the process is likely shutting down anyway.
  */
-function removeProxyEnv(proxyUrl: string): void {
-  for (const key of PROXY_ENV_KEYS) {
-    if (process.env[key] === proxyUrl) {
+function restoreProxyEnv(snapshot: ProxyEnvSnapshot): void {
+  for (const key of ALL_PROXY_ENV_KEYS) {
+    const value = snapshot[key];
+    if (value === undefined) {
       delete process.env[key];
+    } else {
+      process.env[key] = value;
     }
   }
-  for (const key of GLOBAL_AGENT_PROXY_KEYS) {
-    if (process.env[key] === proxyUrl) {
-      delete process.env[key];
-    }
+}
+
+function hasAmbientProxyEnv(snapshot: ProxyEnvSnapshot): boolean {
+  return PROXY_ENV_KEYS.some((key) => {
+    const value = snapshot[key];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+}
+
+function restoreGlobalAgentRuntime(snapshot: ProxyEnvSnapshot): void {
+  if (
+    typeof global === "undefined" ||
+    (global as Record<string, unknown>)["GLOBAL_AGENT"] == null
+  ) {
+    return;
   }
+  const agent = (global as Record<string, unknown>)["GLOBAL_AGENT"] as Record<string, unknown>;
+  agent["HTTP_PROXY"] = snapshot["GLOBAL_AGENT_HTTP_PROXY"] ?? "";
+  agent["HTTPS_PROXY"] = snapshot["GLOBAL_AGENT_HTTPS_PROXY"] ?? "";
+  agent["NO_PROXY"] = snapshot["GLOBAL_AGENT_NO_PROXY"] ?? null;
 }
 
 /**
@@ -162,16 +189,21 @@ function bootstrapNodeHttpStack(proxyUrl: string): void {
 export async function startSsrFProxy(
   config: SsrFProxyConfig | undefined,
 ): Promise<SsrFProxyHandle | null> {
-  // Proxy is opt-out: enabled by default unless explicitly disabled
-  if (config?.enabled === false) {
-    logInfo("ssrf-proxy: disabled by configuration — using application-level SSRF guards only");
+  // Require explicit opt-in; app-level SSRF guards remain active when disabled.
+  if (config?.enabled !== true) {
+    logInfo("ssrf-proxy: disabled — using application-level SSRF guards only");
     return null;
   }
 
-  // F1: Warn loudly when extraAllowedHosts is configured. Allowed hosts bypass
-  // ALL IP-based deny rules (RFC-1918, loopback, cloud metadata, etc.) and are
-  // only as trustworthy as the DNS path that resolves them. See the JSDoc on
-  // CaddySsrFProxyConfigOptions.extraAllowedHosts for full details.
+  const startupEnvSnapshot = captureProxyEnv();
+  if (hasAmbientProxyEnv(startupEnvSnapshot)) {
+    logWarn(
+      "ssrf-proxy: HTTP_PROXY/HTTPS_PROXY is already configured; skipping sidecar because " +
+        "upstream proxy settings cannot be preserved yet. Using application-level SSRF guards only.",
+    );
+    return null;
+  }
+
   if (config?.extraAllowedHosts && config.extraAllowedHosts.length > 0) {
     logWarn(
       `ssrf-proxy: extraAllowedHosts is configured (${config.extraAllowedHosts.length} entr${
@@ -184,18 +216,15 @@ export async function startSsrFProxy(
     );
   }
 
-  // Forward declaration so the onUnexpectedExit closure can reach the URL we
-  // injected. Set after startCaddyProxy resolves.
-  let injectedProxyUrl: string | null = null;
+  // Captured after startCaddyProxy so crash cleanup can restore injected env.
+  let injectedEnvSnapshot: ProxyEnvSnapshot | null = null;
 
   const handleUnexpectedCaddyExit = (): void => {
-    // Caddy crashed. The http_proxy env vars still point at a now-dead loopback
-    // port; without intervention every outbound HTTP request would hard-fail
-    // with ECONNREFUSED. Clear the env vars, reset both enforcement layers,
-    // so openclaw degrades back to application-level fetchWithSsrFGuard guards.
-    if (injectedProxyUrl != null) {
-      removeProxyEnv(injectedProxyUrl);
-      injectedProxyUrl = null;
+    // Restore proxy env and reset cached agents so requests do not keep using
+    // the dead Caddy port.
+    if (injectedEnvSnapshot != null) {
+      restoreProxyEnv(injectedEnvSnapshot);
+      injectedEnvSnapshot = null;
     }
 
     // Layer A: reset undici's global dispatcher so fetch() stops using ProxyAgent
@@ -205,26 +234,16 @@ export async function startSsrFProxy(
       logWarn(`ssrf-proxy: failed to reset undici dispatcher after Caddy crash: ${String(err)}`);
     }
 
-    // Layer B: clear global-agent's runtime proxy URLs so http.request/https.request
-    // stop routing through the dead proxy port
+    // Layer B: restore global-agent's runtime proxy URLs so http.request /
+    // https.request stop routing through the dead proxy port.
     try {
-      if (
-        typeof global !== "undefined" &&
-        (global as Record<string, unknown>)["GLOBAL_AGENT"] != null
-      ) {
-        const agent = (global as Record<string, unknown>)["GLOBAL_AGENT"] as Record<
-          string,
-          unknown
-        >;
-        agent["HTTP_PROXY"] = "";
-        agent["HTTPS_PROXY"] = "";
-      }
+      restoreGlobalAgentRuntime(startupEnvSnapshot);
     } catch (err) {
       logWarn(`ssrf-proxy: failed to reset global-agent after Caddy crash: ${String(err)}`);
     }
 
     logWarn(
-      "ssrf-proxy: cleared proxy env vars and reset both enforcement layers — " +
+      "ssrf-proxy: restored proxy env vars and reset both enforcement layers — " +
         "subsequent requests will use application-level SSRF guards only.",
     );
   };
@@ -233,7 +252,7 @@ export async function startSsrFProxy(
     binaryPath: config?.binaryPath,
     extraBlockedCidrs: config?.extraBlockedCidrs,
     extraAllowedHosts: config?.extraAllowedHosts,
-    upstreamProxy: config?.userProxy,
+    upstreamProxy: undefined,
     onUnexpectedExit: handleUnexpectedCaddyExit,
   };
 
@@ -257,8 +276,7 @@ export async function startSsrFProxy(
   }
 
   // Step 1: Inject proxy URL into process.env BEFORE activating both layers.
-  injectProxyEnv(handle.proxyUrl);
-  injectedProxyUrl = handle.proxyUrl;
+  injectedEnvSnapshot = injectProxyEnv(handle.proxyUrl);
 
   // Step 2 — Layer A: Force undici's global dispatcher to pick up the new env
   // vars immediately. Without this, ensureGlobalUndiciEnvProxyDispatcher() would
@@ -278,18 +296,16 @@ export async function startSsrFProxy(
   const ssrfHandle: SsrFProxyHandle = {
     ...handle,
     injectedProxyUrl: handle.proxyUrl,
+    envSnapshot: injectedEnvSnapshot,
     stop: async () => {
-      // Mark as cleared so that if Caddy's exit handler also fires, it won't
-      // double-clear or log an extra "degraded" warning.
-      if (injectedProxyUrl != null) {
-        removeProxyEnv(injectedProxyUrl);
-        injectedProxyUrl = null;
+      // Mark as restored so Caddy's exit handler skips duplicate cleanup.
+      if (injectedEnvSnapshot != null) {
+        restoreProxyEnv(injectedEnvSnapshot);
+        injectedEnvSnapshot = null;
       }
 
-      // Mirror the crash handler logic: removing env vars alone is not enough
-      // because both enforcement layers cache the proxy target separately
-      // from process.env. Without resetting them, subsequent requests would
-      // continue to route through the now-dead proxy port (ECONNREFUSED).
+      // Restoring process.env is not enough; both enforcement layers cache the
+      // proxy target separately.
 
       // Layer A: reset undici's global dispatcher so fetch() stops using the
       // ProxyAgent that was installed when the proxy was started.
@@ -299,20 +315,10 @@ export async function startSsrFProxy(
         logWarn(`ssrf-proxy: failed to reset undici dispatcher on stop: ${String(err)}`);
       }
 
-      // Layer B: clear global-agent's runtime proxy URLs so http.request /
+      // Layer B: restore global-agent's runtime proxy URLs so http.request /
       // https.request stop routing through the dead proxy port.
       try {
-        if (
-          typeof global !== "undefined" &&
-          (global as Record<string, unknown>)["GLOBAL_AGENT"] != null
-        ) {
-          const agent = (global as Record<string, unknown>)["GLOBAL_AGENT"] as Record<
-            string,
-            unknown
-          >;
-          agent["HTTP_PROXY"] = "";
-          agent["HTTPS_PROXY"] = "";
-        }
+        restoreGlobalAgentRuntime(startupEnvSnapshot);
       } catch (err) {
         logWarn(`ssrf-proxy: failed to reset global-agent on stop: ${String(err)}`);
       }

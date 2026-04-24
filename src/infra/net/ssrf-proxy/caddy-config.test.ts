@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { isBlockedHostnameOrIp } from "../ssrf.js";
 import {
   buildCaddySsrFProxyConfig,
   buildCaddySsrFProxyConfigJson,
@@ -29,6 +30,21 @@ describe("buildCaddySsrFProxyConfig", () => {
     for (const host of DEFAULT_BLOCKED_HOSTNAMES) {
       expect(denyRule.subjects).toContain(host);
     }
+  });
+
+  it.each([
+    ["RFC2544 benchmarking range", "198.18.0.0/15", "198.18.0.1"],
+    ["IPv6 unspecified", "::/128", "::"],
+    ["IPv6 discard prefix", "100::/64", "100::1"],
+    ["IPv6 benchmarking range", "2001:2::/48", "2001:2::1"],
+    ["IPv6 ORCHIDv2", "2001:20::/28", "2001:20::1"],
+    ["deprecated IPv6 site-local", "fec0::/10", "fec0::1"],
+    ["NAT64 local-use prefix", "64:ff9b:1::/48", "64:ff9b:1::10.0.0.1"],
+    ["6to4 with embedded private IPv4", "2002::/16", "2002:7f00:0001::"],
+    ["Teredo with embedded private IPv4", "2001::/32", "2001:0000:0:0:0:0:80ff:fefe"],
+  ])("blocks %s in both Caddy and app-level guards", (_name, cidr, representativeIp) => {
+    expect(DEFAULT_BLOCKED_CIDRS).toContain(cidr);
+    expect(isBlockedHostnameOrIp(representativeIp)).toBe(true);
   });
 
   it("appends extraBlockedCidrs to the deny rule", () => {
@@ -62,13 +78,13 @@ describe("buildCaddySsrFProxyConfig", () => {
     expect(last).toEqual({ subjects: ["all"], allow: true });
   });
 
-  it("sets the upstream proxy URL when upstreamProxy is provided", () => {
-    const config = buildCaddySsrFProxyConfig({
-      port: 9000,
-      upstreamProxy: "http://proxy.corp.example.com:8080",
-    }) as any;
-    const handler = config.apps.http.servers["ssrf-proxy"].routes[0].handle[0];
-    expect(handler.upstream).toBe("http://proxy.corp.example.com:8080");
+  it("rejects upstreamProxy because forwardproxy upstream is incompatible with ACL", () => {
+    expect(() =>
+      buildCaddySsrFProxyConfig({
+        port: 9000,
+        upstreamProxy: "http://proxy.corp.example.com:8080",
+      }),
+    ).toThrow(/upstream proxy.*ACL/u);
   });
 
   it("does not set upstream when upstreamProxy is not provided", () => {

@@ -19,6 +19,13 @@ const getProgramContextMock = vi.hoisted(() => vi.fn(() => null));
 const registerCoreCliByNameMock = vi.hoisted(() => vi.fn());
 const registerSubCliByNameMock = vi.hoisted(() => vi.fn());
 const restoreTerminalStateMock = vi.hoisted(() => vi.fn());
+const loadConfigMock = vi.hoisted(() => vi.fn(() => ({})));
+const startSsrFProxyMock = vi.hoisted(() =>
+  vi.fn<(config: unknown) => Promise<unknown>>(async () => null),
+);
+const stopSsrFProxyMock = vi.hoisted(() =>
+  vi.fn<(handle: unknown) => Promise<void>>(async () => {}),
+);
 const maybeRunCliInContainerMock = vi.hoisted(() =>
   vi.fn<
     (argv: string[]) => { handled: true; exitCode: number } | { handled: false; argv: string[] }
@@ -94,10 +101,43 @@ vi.mock("../terminal/restore.js", () => ({
   restoreTerminalState: restoreTerminalStateMock,
 }));
 
+vi.mock("../config/io.js", () => ({
+  loadConfig: loadConfigMock,
+}));
+
+vi.mock("../infra/net/ssrf-proxy/proxy-lifecycle.js", () => ({
+  startSsrFProxy: startSsrFProxyMock,
+  stopSsrFProxy: stopSsrFProxyMock,
+}));
+
+function makeSsrFProxyHandle() {
+  return {
+    port: 19876,
+    proxyUrl: "http://127.0.0.1:19876",
+    pid: 1234,
+    injectedProxyUrl: "http://127.0.0.1:19876",
+    envSnapshot: {
+      http_proxy: undefined,
+      https_proxy: undefined,
+      HTTP_PROXY: undefined,
+      HTTPS_PROXY: undefined,
+      GLOBAL_AGENT_HTTP_PROXY: undefined,
+      GLOBAL_AGENT_HTTPS_PROXY: undefined,
+      no_proxy: undefined,
+      NO_PROXY: undefined,
+      GLOBAL_AGENT_NO_PROXY: undefined,
+    },
+    stop: vi.fn(async () => {}),
+  };
+}
+
 describe("runCli exit behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     hasMemoryRuntimeMock.mockReturnValue(false);
+    loadConfigMock.mockReturnValue({});
+    startSsrFProxyMock.mockResolvedValue(null);
+    stopSsrFProxyMock.mockResolvedValue(undefined);
     outputPrecomputedRootHelpTextMock.mockReturnValue(false);
     getProgramContextMock.mockReturnValue(null);
   });
@@ -117,6 +157,63 @@ describe("runCli exit behavior", () => {
     expect(startTaskRegistryMaintenanceMock).not.toHaveBeenCalled();
     expect(exitSpy).not.toHaveBeenCalled();
     exitSpy.mockRestore();
+  });
+
+  it("stops the SSRF proxy after normal routed command completion", async () => {
+    const handle = makeSsrFProxyHandle();
+    startSsrFProxyMock.mockResolvedValueOnce(handle);
+    tryRouteCliMock.mockResolvedValueOnce(true);
+
+    await runCli(["node", "openclaw", "status"]);
+
+    expect(startSsrFProxyMock).toHaveBeenCalledWith(undefined);
+    expect(stopSsrFProxyMock).toHaveBeenCalledOnce();
+    expect(stopSsrFProxyMock).toHaveBeenCalledWith(handle);
+  });
+
+  it("stops the SSRF proxy and exits after SIGINT", async () => {
+    const handle = makeSsrFProxyHandle();
+    startSsrFProxyMock.mockResolvedValueOnce(handle);
+
+    let resolveRoute: (value: boolean) => void = () => {};
+    tryRouteCliMock.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        resolveRoute = resolve;
+      }),
+    );
+
+    const processOnceSpy = vi.spyOn(process, "once");
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number | string) => {
+      void code;
+      return undefined as never;
+    }) as typeof process.exit);
+
+    try {
+      const runPromise = runCli(["node", "openclaw", "status"]);
+      await vi.waitFor(() => {
+        expect(processOnceSpy).toHaveBeenCalledWith("SIGINT", expect.any(Function));
+      });
+
+      const sigintHandler = processOnceSpy.mock.calls.find(([event]) => event === "SIGINT")?.[1];
+      if (typeof sigintHandler !== "function") {
+        throw new Error("SIGINT handler was not registered");
+      }
+      sigintHandler();
+
+      await vi.waitFor(() => {
+        expect(stopSsrFProxyMock).toHaveBeenCalledWith(handle);
+      });
+      await vi.waitFor(() => {
+        expect(exitSpy).toHaveBeenCalledWith(130);
+      });
+
+      resolveRoute(true);
+      await runPromise;
+      expect(stopSsrFProxyMock).toHaveBeenCalledTimes(1);
+    } finally {
+      exitSpy.mockRestore();
+      processOnceSpy.mockRestore();
+    }
   });
 
   it("renders root help without building the full program", async () => {

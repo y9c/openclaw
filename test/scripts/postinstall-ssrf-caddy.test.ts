@@ -144,13 +144,41 @@ describe("postinstall-ssrf-caddy: pure helpers", () => {
   });
 
   it("computeCachePaths produces .exe names on Windows and bare names elsewhere", () => {
-    const linux = computeCachePaths({ homeDir: "/h", version: VERSION, platform: "linux" });
+    const linux = computeCachePaths({
+      homeDir: "/h",
+      version: VERSION,
+      platform: "linux",
+      arch: "x64",
+    });
     expect(linux.targetPath).toBe(`/h/.openclaw/bin/caddy-ssrf`);
-    expect(linux.versionedPath).toBe(`/h/.openclaw/bin/caddy-ssrf-${VERSION}`);
+    expect(linux.versionedPath).toBe(`/h/.openclaw/bin/caddy-ssrf-${VERSION}-linux-x64`);
 
-    const win = computeCachePaths({ homeDir: "C:\\Users\\x", version: VERSION, platform: "win32" });
+    const win = computeCachePaths({
+      homeDir: "C:\\Users\\x",
+      version: VERSION,
+      platform: "win32",
+      arch: "x64",
+    });
     expect(win.targetPath.endsWith("caddy-ssrf.exe")).toBe(true);
-    expect(win.versionedPath.endsWith(`caddy-ssrf-${VERSION}.exe`)).toBe(true);
+    expect(win.versionedPath.endsWith(`caddy-ssrf-${VERSION}-windows-x64.exe`)).toBe(true);
+  });
+
+  it("computeCachePaths prefers the invoking sudo user's home for global installs", () => {
+    const linux = computeCachePaths({
+      homeDir: "/root",
+      version: VERSION,
+      platform: "linux",
+      env: { SUDO_USER: "jane" },
+    });
+    expect(linux.targetPath).toBe(`/home/jane/.openclaw/bin/caddy-ssrf`);
+
+    const darwin = computeCachePaths({
+      homeDir: "/var/root",
+      version: VERSION,
+      platform: "darwin",
+      env: { SUDO_USER: "jane" },
+    });
+    expect(darwin.targetPath).toBe(`/Users/jane/.openclaw/bin/caddy-ssrf`);
   });
 
   it("buildAssetName / buildAssetUrl / buildChecksumsUrl agree on naming", () => {
@@ -277,15 +305,21 @@ describe("postinstall-ssrf-caddy: installCaddySsrFBinary", () => {
     expect(result.status).toBe("skipped-platform");
   });
 
-  it("returns 'cached' and refreshes the symlink when versioned binary exists", async () => {
+  it("verifies a cached binary before refreshing the symlink", async () => {
     const platform = "linux";
+    const platformKey = "linux-x64";
+    const assetName = buildAssetName({ version: VERSION, platformKey, platform });
+    const checksumsUrl = buildChecksumsUrl({ version: VERSION });
     const { binDir, versionedPath, targetPath } = computeCachePaths({
       homeDir,
       version: VERSION,
       platform,
+      arch: "x64",
     });
     mkdirSync(binDir, { recursive: true });
-    writeFileSync(versionedPath, "binary");
+    const binaryBytes = Buffer.from("binary");
+    writeFileSync(versionedPath, binaryBytes);
+    const checksumsBody = `${sha256Hex(binaryBytes)}  ${assetName}\n`;
 
     const result = await installCaddySsrFBinary({
       homeDir,
@@ -294,11 +328,44 @@ describe("postinstall-ssrf-caddy: installCaddySsrFBinary", () => {
       env: {},
       versionFilePath,
       logger,
-      httpsModule: makeStubHttps({}),
+      httpsModule: makeStubHttps({
+        [checksumsUrl]: { body: checksumsBody },
+      }),
     });
     expect(result).toMatchObject({ status: "cached", version: VERSION, path: targetPath });
     // Symlink (or copy) was created at targetPath.
     expect(readFileSync(targetPath, "utf8")).toBe("binary");
+  });
+
+  it("rejects a cached binary when its checksum does not match", async () => {
+    const platform = "linux";
+    const platformKey = "linux-x64";
+    const assetName = buildAssetName({ version: VERSION, platformKey, platform });
+    const checksumsUrl = buildChecksumsUrl({ version: VERSION });
+    const { binDir, versionedPath, targetPath } = computeCachePaths({
+      homeDir,
+      version: VERSION,
+      platform,
+      arch: "x64",
+    });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(versionedPath, "partial");
+
+    const result = await installCaddySsrFBinary({
+      homeDir,
+      platform,
+      arch: "x64",
+      env: {},
+      versionFilePath,
+      logger,
+      httpsModule: makeStubHttps({
+        [checksumsUrl]: { body: `${"a".repeat(64)}  ${assetName}\n` },
+      }),
+    });
+
+    expect(result).toMatchObject({ status: "failed", reason: "cached-checksum-mismatch" });
+    expect(() => readFileSync(versionedPath)).toThrow();
+    expect(() => readFileSync(targetPath)).toThrow();
   });
 
   it("downloads, verifies checksum, chmods, symlinks, and cleans up old versions", async () => {
@@ -312,7 +379,12 @@ describe("postinstall-ssrf-caddy: installCaddySsrFBinary", () => {
     const checksumsBody = `${expectedHash}  ${assetName}\n`;
 
     // Pre-seed an older versioned binary that should get cleaned up.
-    const { binDir, targetPath } = computeCachePaths({ homeDir, version: VERSION, platform });
+    const { binDir, targetPath } = computeCachePaths({
+      homeDir,
+      version: VERSION,
+      platform,
+      arch: "x64",
+    });
     mkdirSync(binDir, { recursive: true });
     const stale = join(binDir, "caddy-ssrf-2.0.0");
     writeFileSync(stale, "stale");
@@ -335,7 +407,7 @@ describe("postinstall-ssrf-caddy: installCaddySsrFBinary", () => {
     // Stale version is gone.
     expect(readdirSync(binDir).includes("caddy-ssrf-2.0.0")).toBe(false);
     // Current versioned binary remains.
-    expect(readdirSync(binDir).includes(`caddy-ssrf-${VERSION}`)).toBe(true);
+    expect(readdirSync(binDir).includes(`caddy-ssrf-${VERSION}-linux-x64`)).toBe(true);
   });
 
   it("removes the binary and warns on checksum mismatch", async () => {
@@ -350,6 +422,7 @@ describe("postinstall-ssrf-caddy: installCaddySsrFBinary", () => {
       homeDir,
       version: VERSION,
       platform,
+      arch: "x64",
     });
 
     const result = await installCaddySsrFBinary({

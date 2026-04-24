@@ -69,7 +69,39 @@ export function resolvePlatformKey(platform = process.platform, arch = process.a
  * Computes the cache layout for a given home dir + version.
  * Pure function — easy to unit-test.
  */
-export function computeCachePaths({ homeDir, version, platform = process.platform } = {}) {
+export function resolveInstallHomeDir({
+  homeDir,
+  platform = process.platform,
+  env = process.env,
+} = {}) {
+  const explicitHome = env["OPENCLAW_CADDY_INSTALL_HOME"];
+  if (explicitHome && explicitHome.trim()) {
+    return explicitHome.trim();
+  }
+  const sudoHome = env["SUDO_HOME"];
+  if (sudoHome && sudoHome.trim()) {
+    return sudoHome.trim();
+  }
+  const sudoUser = env["SUDO_USER"];
+  if (
+    sudoUser &&
+    sudoUser.trim() &&
+    sudoUser !== "root" &&
+    (homeDir === "/root" || homeDir === "/var/root")
+  ) {
+    return platform === "darwin" ? `/Users/${sudoUser}` : `/home/${sudoUser}`;
+  }
+  return homeDir;
+}
+
+export function computeCachePaths({
+  homeDir,
+  version,
+  platform = process.platform,
+  arch = process.arch,
+  platformKey,
+  env = process.env,
+} = {}) {
   if (!homeDir) {
     throw new Error("computeCachePaths: homeDir is required");
   }
@@ -77,9 +109,14 @@ export function computeCachePaths({ homeDir, version, platform = process.platfor
     throw new Error("computeCachePaths: version is required");
   }
   const isWindows = platform === "win32";
-  const binDir = join(homeDir, ".openclaw", "bin");
+  const installHome = resolveInstallHomeDir({ homeDir, platform, env });
+  const binDir = join(installHome, ".openclaw", "bin");
   const targetName = isWindows ? "caddy-ssrf.exe" : "caddy-ssrf";
-  const versionedName = isWindows ? `caddy-ssrf-${version}.exe` : `caddy-ssrf-${version}`;
+  const resolvedPlatformKey = platformKey ?? resolvePlatformKey(platform, arch);
+  const versionedSuffix = resolvedPlatformKey ? `${version}-${resolvedPlatformKey}` : version;
+  const versionedName = isWindows
+    ? `caddy-ssrf-${versionedSuffix}.exe`
+    : `caddy-ssrf-${versionedSuffix}`;
   return {
     binDir,
     targetPath: join(binDir, targetName),
@@ -218,6 +255,55 @@ export function parseChecksum(body, assetName) {
   return null;
 }
 
+async function verifyBinaryChecksum({
+  filePath,
+  assetName,
+  checksumsUrl,
+  httpsModule,
+  logger,
+  failureReasonPrefix,
+}) {
+  let checksumsBody;
+  try {
+    checksumsBody = await fetchText(checksumsUrl, { httpsModule });
+  } catch (err) {
+    logger.warn?.(
+      `ssrf-proxy: could not fetch Caddy checksums (${describeError(err)}) — refusing to use unverified binary`,
+    );
+    return { ok: false, reason: `${failureReasonPrefix}-checksum-fetch` };
+  }
+
+  const expected = parseChecksum(checksumsBody, assetName);
+  if (!expected) {
+    logger.warn?.(
+      `ssrf-proxy: checksums file did not contain an entry for ${assetName} — refusing to use unverified binary`,
+    );
+    return { ok: false, reason: `${failureReasonPrefix}-checksum-missing` };
+  }
+
+  let actual;
+  try {
+    actual = await sha256File(filePath);
+  } catch (err) {
+    logger.warn?.(`ssrf-proxy: could not hash Caddy binary: ${describeError(err)}`);
+    return { ok: false, reason: `${failureReasonPrefix}-hash` };
+  }
+
+  if (actual !== expected) {
+    logger.warn?.(
+      `ssrf-proxy: Caddy checksum mismatch (expected ${expected}, got ${String(actual)}) — removing binary`,
+    );
+    return {
+      ok: false,
+      reason: `${failureReasonPrefix}-checksum-mismatch`,
+      expected,
+      actual,
+    };
+  }
+
+  return { ok: true, expected, actual };
+}
+
 /**
  * Replaces (or creates) a symlink at `linkPath` pointing to `targetPath`.
  * Falls back to copying the file on platforms where symlinking is not allowed
@@ -260,7 +346,7 @@ export function ensureSymlink(targetPath, linkPath) {
  * Removes any cached `caddy-ssrf-*` binaries in `binDir` that are not the
  * current versioned binary. Safe even when `binDir` is missing.
  */
-export function cleanOldVersions(binDir, currentVersion) {
+export function cleanOldVersions(binDir, currentVersion, currentPlatformKey) {
   let entries;
   try {
     entries = fs.readdirSync(binDir);
@@ -268,7 +354,9 @@ export function cleanOldVersions(binDir, currentVersion) {
     return [];
   }
   const removed = [];
-  const currentSuffix = `caddy-ssrf-${currentVersion}`;
+  const currentSuffix = currentPlatformKey
+    ? `caddy-ssrf-${currentVersion}-${currentPlatformKey}`
+    : `caddy-ssrf-${currentVersion}`;
   for (const entry of entries) {
     if (!entry.startsWith("caddy-ssrf-")) {
       continue;
@@ -341,13 +429,38 @@ export async function installCaddySsrFBinary({
     homeDir,
     version,
     platform,
+    arch,
+    platformKey,
+    env,
   });
+
+  const assetName = buildAssetName({ version, platformKey, platform });
+  const url = buildAssetUrl({ version, assetName });
+  const checksumsUrl = buildChecksumsUrl({ version });
 
   // Already cached?
   if (fs.existsSync(versionedPath)) {
+    const verification = await verifyBinaryChecksum({
+      filePath: versionedPath,
+      assetName,
+      checksumsUrl,
+      httpsModule,
+      logger,
+      failureReasonPrefix: "cached",
+    });
+    if (!verification.ok) {
+      safeUnlink(versionedPath);
+      safeUnlink(targetPath);
+      return {
+        status: "failed",
+        reason: verification.reason,
+        ...(verification.expected ? { expected: verification.expected } : {}),
+        ...(verification.actual ? { actual: verification.actual } : {}),
+      };
+    }
     try {
       ensureSymlink(versionedPath, targetPath);
-      cleanOldVersions(binDir, version);
+      cleanOldVersions(binDir, version, platformKey);
     } catch (err) {
       logger.warn?.(`ssrf-proxy: failed to refresh cached Caddy symlink: ${String(err)}`);
     }
@@ -355,10 +468,6 @@ export async function installCaddySsrFBinary({
   }
 
   fs.mkdirSync(binDir, { recursive: true });
-
-  const assetName = buildAssetName({ version, platformKey, platform });
-  const url = buildAssetUrl({ version, assetName });
-  const checksumsUrl = buildChecksumsUrl({ version });
 
   logger.log?.(`ssrf-proxy: downloading Caddy ${version} for ${platformKey}...`);
 
@@ -374,43 +483,23 @@ export async function installCaddySsrFBinary({
     return { status: "failed", reason: "download" };
   }
 
-  // Verify checksum. A failure to even fetch the checksums file is treated as
-  // a verification failure — we never silently accept an unverified binary.
-  let checksumsBody;
-  try {
-    checksumsBody = await fetchText(checksumsUrl, { httpsModule });
-  } catch (err) {
+  const verification = await verifyBinaryChecksum({
+    filePath: versionedPath,
+    assetName,
+    checksumsUrl,
+    httpsModule,
+    logger,
+    failureReasonPrefix: "",
+  });
+  if (!verification.ok) {
     safeUnlink(versionedPath);
-    logger.warn?.(
-      `ssrf-proxy: could not fetch Caddy checksums (${describeError(err)}) — refusing to install unverified binary`,
-    );
-    return { status: "failed", reason: "checksum-fetch" };
-  }
-
-  const expected = parseChecksum(checksumsBody, assetName);
-  if (!expected) {
-    safeUnlink(versionedPath);
-    logger.warn?.(
-      `ssrf-proxy: checksums file did not contain an entry for ${assetName} — refusing to install unverified binary`,
-    );
-    return { status: "failed", reason: "checksum-missing" };
-  }
-
-  let actual;
-  try {
-    actual = await sha256File(versionedPath);
-  } catch (err) {
-    safeUnlink(versionedPath);
-    logger.warn?.(`ssrf-proxy: could not hash downloaded Caddy binary: ${describeError(err)}`);
-    return { status: "failed", reason: "hash" };
-  }
-
-  if (actual !== expected) {
-    safeUnlink(versionedPath);
-    logger.warn?.(
-      `ssrf-proxy: Caddy checksum mismatch (expected ${expected}, got ${String(actual)}) — removing binary`,
-    );
-    return { status: "failed", reason: "checksum-mismatch", expected, actual };
+    const reason = String(verification.reason).replace(/^-/, "");
+    return {
+      status: "failed",
+      reason,
+      ...(verification.expected ? { expected: verification.expected } : {}),
+      ...(verification.actual ? { actual: verification.actual } : {}),
+    };
   }
 
   try {
@@ -426,7 +515,7 @@ export async function installCaddySsrFBinary({
     return { status: "failed", reason: "symlink" };
   }
 
-  cleanOldVersions(binDir, version);
+  cleanOldVersions(binDir, version, platformKey);
 
   logger.log?.(`ssrf-proxy: Caddy ${version} ready at ${targetPath}`);
   return { status: "downloaded", version, path: targetPath };

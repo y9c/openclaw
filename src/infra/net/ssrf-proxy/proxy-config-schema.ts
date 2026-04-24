@@ -8,11 +8,10 @@ export const SsrFProxyConfigSchema = z
   .object({
     /**
      * Whether to enable the Caddy-based network-level SSRF proxy.
-     * Default: true (enabled).
+     * Default: false (disabled).
      *
-     * Set to false to disable the proxy and rely solely on application-level
-     * fetchWithSsrFGuard protections. Useful in environments where caddy
-     * cannot be installed or the proxy is managed externally.
+     * Set to true to enable the proxy. When disabled, OpenClaw relies on
+     * application-level fetchWithSsrFGuard protections.
      */
     enabled: z.boolean().optional(),
 
@@ -44,19 +43,11 @@ export const SsrFProxyConfigSchema = z
     extraAllowedHosts: z.array(z.string()).optional(),
 
     /**
-     * Upstream proxy URL to chain through.
-     *
-     * If your organisation requires all outbound traffic to go through a
-     * corporate proxy, set this to that proxy's URL. The Caddy sidecar will
-     * forward requests to this upstream proxy instead of connecting directly.
-     *
-     * Example: "http://proxy.corp.example.com:8080"
-     *
-     * Note: This is separate from the standard HTTP_PROXY / HTTPS_PROXY
-     * environment variables. If you already have those set, openclaw will use
-     * them via the TRUSTED_ENV_PROXY mode without needing this option.
+     * Reserved for a future upstream-proxy design. Caddy forwardproxy upstream
+     * mode is incompatible with ACL enforcement, so accepting it here would
+     * silently weaken the sidecar's SSRF guarantee.
      */
-    userProxy: z.string().url().optional(),
+    userProxy: z.never().optional(),
   })
   .strict()
   .optional();

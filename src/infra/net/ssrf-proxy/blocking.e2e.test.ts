@@ -18,7 +18,13 @@
 
 import { request as httpRequest } from "node:http";
 import { bootstrap as bootstrapGlobalAgent } from "global-agent";
-import { setGlobalDispatcher, ProxyAgent, Agent as UndiciAgent, getGlobalDispatcher } from "undici";
+import {
+  setGlobalDispatcher,
+  ProxyAgent,
+  Agent as UndiciAgent,
+  getGlobalDispatcher,
+  request as undiciRequest,
+} from "undici";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import type { CaddyProxyHandle } from "./proxy-process.js";
 import {
@@ -71,6 +77,20 @@ function expectHttpGetBlocked(
     });
     req.end();
   });
+}
+
+async function expectUndiciRequestBlocked(
+  url: string,
+): Promise<{ blocked: boolean; status?: number; error?: string }> {
+  try {
+    const res = await undiciRequest(url);
+    if (res.statusCode >= 400) {
+      return { blocked: true, status: res.statusCode };
+    }
+    return { blocked: false, status: res.statusCode };
+  } catch (err) {
+    return { blocked: true, error: (err as Error).message };
+  }
 }
 
 describe.skipIf(!isTestCaddyAvailable())(
@@ -136,8 +156,11 @@ describe.skipIf(!isTestCaddyAvailable())(
       // Restore state
       setGlobalDispatcher(savedDispatcher ?? new UndiciAgent());
       for (const k of envKeys) {
-        if (savedEnv[k] === undefined) {delete process.env[k];}
-        else {process.env[k] = savedEnv[k];}
+        if (savedEnv[k] === undefined) {
+          delete process.env[k];
+        } else {
+          process.env[k] = savedEnv[k];
+        }
       }
       await stopTestSsrFProxy(caddy);
       await victim?.stop();
@@ -183,6 +206,13 @@ describe.skipIf(!isTestCaddyAvailable())(
       it("blocks fetch() to localhost (by hostname)", async () => {
         const result = await expectFetchBlocked("http://localhost:80/admin");
         expect(result.blocked).toBe(true);
+      });
+
+      it("blocks undici.request() to 127.0.0.1 (victim server)", async () => {
+        const result = await expectUndiciRequestBlocked(`${victim.url()}/undici-request`);
+
+        expect(result.blocked).toBe(true);
+        expect(victim.hits.length).toBe(0);
       });
     });
 

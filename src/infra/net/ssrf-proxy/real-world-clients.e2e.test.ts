@@ -88,8 +88,11 @@ describe.skipIf(!isTestCaddyAvailable())(
     afterAll(async () => {
       setGlobalDispatcher(savedDispatcher ?? new UndiciAgent());
       for (const k of envKeys) {
-        if (savedEnv[k] === undefined) {delete process.env[k];}
-        else {process.env[k] = savedEnv[k];}
+        if (savedEnv[k] === undefined) {
+          delete process.env[k];
+        } else {
+          process.env[k] = savedEnv[k];
+        }
       }
       await stopTestSsrFProxy(caddy);
       await victim?.stop();
@@ -136,14 +139,20 @@ describe.skipIf(!isTestCaddyAvailable())(
 
     it("got pattern (URL object + custom Agent) — blocked", async () => {
       // got passes URL objects and uses a custom Agent for keep-alive
+      const targetUrl = new URL(`http://127.0.0.1:${victim.port()}/got-pattern`);
       const r = await tryRequest({
-        ...new URL(`http://127.0.0.1:${victim.port()}/got-pattern`),
+        protocol: targetUrl.protocol,
+        hostname: targetUrl.hostname,
+        port: targetUrl.port,
+        path: `${targetUrl.pathname}${targetUrl.search}`,
         method: "GET",
         agent: new HttpAgent({ keepAlive: true, maxSockets: 10 }),
-      } as http.RequestOptions);
-      if (r.status !== undefined) {
-        expect(r.status).toBeGreaterThanOrEqual(400);
+      });
+      expect(r.error).toBeUndefined();
+      if (r.status === undefined) {
+        throw new Error("expected Caddy to return a denial response");
       }
+      expect(r.status).toBeGreaterThanOrEqual(400);
       expect(victim.hits.length).toBe(0);
     });
 

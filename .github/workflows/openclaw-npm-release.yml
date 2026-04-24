@@ -276,15 +276,42 @@ jobs:
             exit 1
           fi
 
+  resolve_caddy_ssrf_version:
+    if: ${{ !inputs.preflight_only }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.caddy-version.outputs.version }}
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Resolve pinned Caddy SSRF version
+        id: caddy-version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < scripts/caddy-ssrf-version.txt)"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid Caddy SSRF version: $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
   build_caddy_ssrf:
     # Rebuild the Caddy + forwardproxy binaries for the SSRF proxy on every
     # release. If the build fails the release fails — we never ship a
     # postinstall that references binaries that can't be built.
+    needs: [validate_publish_request, resolve_caddy_ssrf_version]
     if: ${{ !inputs.preflight_only }}
     uses: ./.github/workflows/build-caddy-ssrf.yml
     permissions:
       contents: write
     with:
+      version: ${{ needs.resolve_caddy_ssrf_version.outputs.version }}
       release: true
 
   publish_openclaw_npm:

@@ -72,6 +72,7 @@ import { hasEnvHttpProxyConfigured } from "./proxy-env.js";
 let DEFAULT_UNDICI_STREAM_TIMEOUT_MS: typeof import("./undici-global-dispatcher.js").DEFAULT_UNDICI_STREAM_TIMEOUT_MS;
 let ensureGlobalUndiciEnvProxyDispatcher: typeof import("./undici-global-dispatcher.js").ensureGlobalUndiciEnvProxyDispatcher;
 let ensureGlobalUndiciStreamTimeouts: typeof import("./undici-global-dispatcher.js").ensureGlobalUndiciStreamTimeouts;
+let forceResetGlobalDispatcher: typeof import("./undici-global-dispatcher.js").forceResetGlobalDispatcher;
 let resetGlobalUndiciStreamTimeoutsForTests: typeof import("./undici-global-dispatcher.js").resetGlobalUndiciStreamTimeoutsForTests;
 
 describe("ensureGlobalUndiciStreamTimeouts", () => {
@@ -80,6 +81,7 @@ describe("ensureGlobalUndiciStreamTimeouts", () => {
       DEFAULT_UNDICI_STREAM_TIMEOUT_MS,
       ensureGlobalUndiciEnvProxyDispatcher,
       ensureGlobalUndiciStreamTimeouts,
+      forceResetGlobalDispatcher,
       resetGlobalUndiciStreamTimeoutsForTests,
     } = await import("./undici-global-dispatcher.js"));
   });
@@ -233,6 +235,23 @@ describe("ensureGlobalUndiciEnvProxyDispatcher", () => {
 
     expect(setGlobalDispatcher).toHaveBeenCalledTimes(2);
     expect(getCurrentDispatcher()).toBeInstanceOf(EnvHttpProxyAgent);
+  });
+});
+
+describe("forceResetGlobalDispatcher", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetGlobalUndiciStreamTimeoutsForTests();
+    vi.mocked(hasEnvHttpProxyConfigured).mockReturnValue(false);
+  });
+
+  it("replaces an EnvHttpProxyAgent with a direct Agent when proxy env is cleared", () => {
+    setCurrentDispatcher(new EnvHttpProxyAgent());
+
+    forceResetGlobalDispatcher();
+
+    expect(setGlobalDispatcher).toHaveBeenCalledTimes(1);
+    expect(getCurrentDispatcher()).toBeInstanceOf(Agent);
   });
 });
 

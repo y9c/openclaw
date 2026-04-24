@@ -89,25 +89,43 @@ describe("startSsrFProxy — env var injection", () => {
     }
   });
 
-  it("returns null and does not touch env when disabled: false", async () => {
+  it("returns null and does not touch env when enabled is false", async () => {
     const handle = await startSsrFProxy({ enabled: false });
     expect(handle).toBeNull();
     expect(process.env["http_proxy"]).toBeUndefined();
     expect(process.env["GLOBAL_AGENT_HTTP_PROXY"]).toBeUndefined();
   });
 
-  it("returns null and logs warning when Caddy fails to start", async () => {
-    mockStartCaddyProxy.mockRejectedValue(new Error("caddy not found"));
+  it("returns null and does not touch env when not explicitly enabled", async () => {
     const handle = await startSsrFProxy(undefined);
     expect(handle).toBeNull();
+    expect(mockStartCaddyProxy).not.toHaveBeenCalled();
     expect(process.env["http_proxy"]).toBeUndefined();
+    expect(process.env["GLOBAL_AGENT_HTTP_PROXY"]).toBeUndefined();
+  });
+
+  it("returns null and logs warning when Caddy fails to start", async () => {
+    mockStartCaddyProxy.mockRejectedValue(new Error("caddy not found"));
+    const handle = await startSsrFProxy({ enabled: true });
+    expect(handle).toBeNull();
+    expect(process.env["http_proxy"]).toBeUndefined();
+  });
+
+  it("returns null when an ambient proxy env var is already configured", async () => {
+    process.env["HTTPS_PROXY"] = "http://corp-proxy.example.com:8080";
+
+    const handle = await startSsrFProxy({ enabled: true });
+
+    expect(handle).toBeNull();
+    expect(mockStartCaddyProxy).not.toHaveBeenCalled();
+    expect(process.env["HTTPS_PROXY"]).toBe("http://corp-proxy.example.com:8080");
   });
 
   it("sets Layer A env vars (undici) when Caddy starts successfully", async () => {
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    await startSsrFProxy(undefined);
+    await startSsrFProxy({ enabled: true });
 
     // Lowercase — read by undici's EnvHttpProxyAgent
     expect(process.env["http_proxy"]).toBe(fake.proxyUrl);
@@ -121,39 +139,51 @@ describe("startSsrFProxy — env var injection", () => {
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    await startSsrFProxy(undefined);
+    await startSsrFProxy({ enabled: true });
 
     expect(process.env["GLOBAL_AGENT_HTTP_PROXY"]).toBe(fake.proxyUrl);
     expect(process.env["GLOBAL_AGENT_HTTPS_PROXY"]).toBe(fake.proxyUrl);
   });
 
-  it("sets NO_PROXY to exclude loopback on both layers", async () => {
+  it("clears NO_PROXY so loopback targets still go through Caddy", async () => {
+    process.env["NO_PROXY"] = "127.0.0.1,localhost,corp.example.com";
+    process.env["no_proxy"] = "localhost";
+    process.env["GLOBAL_AGENT_NO_PROXY"] = "localhost";
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    await startSsrFProxy(undefined);
+    await startSsrFProxy({ enabled: true });
 
-    expect(process.env["no_proxy"]).toContain("127.0.0.1");
-    expect(process.env["NO_PROXY"]).toContain("127.0.0.1");
-    expect(process.env["GLOBAL_AGENT_NO_PROXY"]).toContain("127.0.0.1");
+    expect(process.env["no_proxy"]).toBe("");
+    expect(process.env["NO_PROXY"]).toBe("");
+    expect(process.env["GLOBAL_AGENT_NO_PROXY"]).toBe("");
   });
 
-  it("preserves existing NO_PROXY entries when adding loopback exclusions", async () => {
+  it("restores previous proxy environment values on stop", async () => {
     process.env["NO_PROXY"] = "corp.example.com";
+    process.env["GLOBAL_AGENT_NO_PROXY"] = "global.corp.example.com";
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    await startSsrFProxy(undefined);
+    const handle = await startSsrFProxy({ enabled: true });
+    expect(handle).not.toBeNull();
 
-    expect(process.env["NO_PROXY"]).toContain("corp.example.com");
-    expect(process.env["NO_PROXY"]).toContain("127.0.0.1");
+    expect(process.env["HTTP_PROXY"]).toBe(fake.proxyUrl);
+    expect(process.env["NO_PROXY"]).toBe("");
+    expect(process.env["GLOBAL_AGENT_NO_PROXY"]).toBe("");
+
+    await stopSsrFProxy(handle);
+
+    expect(process.env["HTTP_PROXY"]).toBeUndefined();
+    expect(process.env["NO_PROXY"]).toBe("corp.example.com");
+    expect(process.env["GLOBAL_AGENT_NO_PROXY"]).toBe("global.corp.example.com");
   });
 
   it("calls forceResetGlobalDispatcher (Layer A activation)", async () => {
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    await startSsrFProxy(undefined);
+    await startSsrFProxy({ enabled: true });
 
     expect(mockForceResetGlobalDispatcher).toHaveBeenCalledOnce();
   });
@@ -162,7 +192,7 @@ describe("startSsrFProxy — env var injection", () => {
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    await startSsrFProxy(undefined);
+    await startSsrFProxy({ enabled: true });
 
     // bootstrap() must be called exactly once (flag is reset in beforeEach)
     expect(mockBootstrapGlobalAgent).toHaveBeenCalledOnce();
@@ -173,9 +203,9 @@ describe("startSsrFProxy — env var injection", () => {
     mockStartCaddyProxy.mockResolvedValue(fake);
 
     // First start (bootstraps)
-    await startSsrFProxy(undefined);
+    await startSsrFProxy({ enabled: true });
     // Second start (should skip bootstrap since flag is set)
-    await startSsrFProxy(undefined);
+    await startSsrFProxy({ enabled: true });
 
     expect(mockBootstrapGlobalAgent).toHaveBeenCalledOnce();
   });
@@ -184,7 +214,7 @@ describe("startSsrFProxy — env var injection", () => {
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    const handle = await startSsrFProxy(undefined);
+    const handle = await startSsrFProxy({ enabled: true });
     expect(handle).not.toBeNull();
 
     await stopSsrFProxy(handle);
@@ -204,7 +234,7 @@ describe("startSsrFProxy — env var injection", () => {
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    const handle = await startSsrFProxy(undefined);
+    const handle = await startSsrFProxy({ enabled: true });
     expect(handle).not.toBeNull();
 
     // First call: Layer A activation during start. Reset so we can isolate the
@@ -220,9 +250,12 @@ describe("startSsrFProxy — env var injection", () => {
     expect(mockForceResetGlobalDispatcher).toHaveBeenCalledOnce();
   });
 
-  it("clears global.GLOBAL_AGENT proxy URLs on stop() (Layer B reset)", async () => {
+  it("restores global.GLOBAL_AGENT proxy URLs on stop() (Layer B reset)", async () => {
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
+    process.env["GLOBAL_AGENT_HTTP_PROXY"] = "http://previous-global.example.com:8080";
+    process.env["GLOBAL_AGENT_HTTPS_PROXY"] = "http://previous-global.example.com:8443";
+    process.env["GLOBAL_AGENT_NO_PROXY"] = "corp.example.com";
 
     // Pre-seed global.GLOBAL_AGENT to mimic the post-bootstrap state where
     // global-agent has installed its agent object on the global scope. The
@@ -233,7 +266,7 @@ describe("startSsrFProxy — env var injection", () => {
       HTTPS_PROXY: fake.proxyUrl,
     };
 
-    const handle = await startSsrFProxy(undefined);
+    const handle = await startSsrFProxy({ enabled: true });
     expect(handle).not.toBeNull();
 
     // Sanity check: bootstrap path on real start would set these to fake.proxyUrl.
@@ -244,16 +277,17 @@ describe("startSsrFProxy — env var injection", () => {
     await stopSsrFProxy(handle);
 
     // stop() must reset Layer B so http.request / https.request stop routing
-    // through the dead proxy port.
-    expect(agent["HTTP_PROXY"]).toBe("");
-    expect(agent["HTTPS_PROXY"]).toBe("");
+    // through the dead proxy port while preserving the user's prior settings.
+    expect(agent["HTTP_PROXY"]).toBe("http://previous-global.example.com:8080");
+    expect(agent["HTTPS_PROXY"]).toBe("http://previous-global.example.com:8443");
+    expect(agent["NO_PROXY"]).toBe("corp.example.com");
   });
 
   it("passes binaryPath from config to startCaddyProxy", async () => {
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    await startSsrFProxy({ binaryPath: "/custom/caddy" });
+    await startSsrFProxy({ enabled: true, binaryPath: "/custom/caddy" });
 
     expect(mockStartCaddyProxy).toHaveBeenCalledWith(
       expect.objectContaining({ binaryPath: "/custom/caddy" }),
@@ -264,7 +298,7 @@ describe("startSsrFProxy — env var injection", () => {
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    await startSsrFProxy({ extraBlockedCidrs: ["203.0.113.0/24"] });
+    await startSsrFProxy({ enabled: true, extraBlockedCidrs: ["203.0.113.0/24"] });
 
     expect(mockStartCaddyProxy).toHaveBeenCalledWith(
       expect.objectContaining({ extraBlockedCidrs: ["203.0.113.0/24"] }),
@@ -275,21 +309,10 @@ describe("startSsrFProxy — env var injection", () => {
     const fake = makeFakeHandle();
     mockStartCaddyProxy.mockResolvedValue(fake);
 
-    await startSsrFProxy({ extraAllowedHosts: ["internal.corp"] });
+    await startSsrFProxy({ enabled: true, extraAllowedHosts: ["internal.corp"] });
 
     expect(mockStartCaddyProxy).toHaveBeenCalledWith(
       expect.objectContaining({ extraAllowedHosts: ["internal.corp"] }),
-    );
-  });
-
-  it("passes userProxy from config as upstreamProxy to startCaddyProxy", async () => {
-    const fake = makeFakeHandle();
-    mockStartCaddyProxy.mockResolvedValue(fake);
-
-    await startSsrFProxy({ userProxy: "http://corp-proxy.example.com:8080" });
-
-    expect(mockStartCaddyProxy).toHaveBeenCalledWith(
-      expect.objectContaining({ upstreamProxy: "http://corp-proxy.example.com:8080" }),
     );
   });
 

@@ -16,7 +16,6 @@ describe("SsrFProxyConfigSchema", () => {
       binaryPath: "/usr/local/bin/caddy",
       extraBlockedCidrs: ["203.0.113.0/24"],
       extraAllowedHosts: ["internal.corp.example.com"],
-      userProxy: "http://proxy.corp.example.com:8080",
     });
     expect(result).toMatchObject({
       enabled: true,
@@ -24,8 +23,10 @@ describe("SsrFProxyConfigSchema", () => {
     });
   });
 
-  it("rejects invalid userProxy (not a URL)", () => {
-    expect(() => SsrFProxyConfigSchema.parse({ userProxy: "not-a-url" })).toThrow();
+  it("rejects userProxy because upstream chaining cannot preserve Caddy ACL enforcement", () => {
+    expect(() =>
+      SsrFProxyConfigSchema.parse({ userProxy: "http://proxy.corp.example.com:8080" }),
+    ).toThrow();
   });
 
   it("rejects unknown keys (strict)", () => {

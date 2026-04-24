@@ -25,15 +25,21 @@ Use this skill for release and publish-time workflow. Keep ordinary development 
 - Before release branching, commit any dirty files in coherent groups, push,
   pull/rebase, then run `/changelog` on `main` and commit/push/pull that
   changelog rewrite immediately before creating the release branch.
+- After the release branch is cut, do not keep rebasing it onto moving `main`.
+  Treat the branch commit as the release base. If validation finds a concrete
+  issue, inspect `main` and backport only the low-risk fix commits that directly
+  address that failure.
 - Do not delete or rewrite beta tags after they leave the machine. If a
   published or pushed beta needs a fix, commit the fix on the release branch and
   increment to the next `-beta.N`.
 - For a beta release train, run the full pre-npm test roster before publishing
   each beta. After a beta is published, run the smaller published-install roster
-  focused on install/update/Docker/Parallels. If anything fails, fix it on the
-  release branch, commit/push/pull, increment beta number, and repeat. Operators
-  may authorize up to 4 autonomous beta attempts; after 4 failed beta attempts,
-  stop and report.
+  focused on install/update plus all Docker and Parallels release checks. If
+  those published-artifact checks all pass, proceed to the non-beta release only
+  when the operator asked for the full beta-to-stable train. If anything fails,
+  fix it on the release branch, commit/push/pull, increment beta number, and
+  repeat. Operators may authorize up to 4 autonomous beta attempts; after 4
+  failed beta attempts, stop and report.
 - Use `/changelog` before version/tag preparation so the top changelog section
   is deduped and ordered by user impact.
 - Do not create beta-specific `CHANGELOG.md` headings. Beta releases use the

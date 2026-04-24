@@ -35,6 +35,12 @@ OpenClaw has three public release lanes:
 - Maintainers normally cut releases from a `release/YYYY.M.D` branch created
   from current `main`, so release validation and fixes do not block new
   development on `main`
+- After a release branch is cut, maintainers keep validating that branch instead
+  of rebasing after every new `main` commit. If validation finds a concrete
+  release issue, they may inspect `main` and backport only low-risk fixes that
+  directly address the failure.
+- Stable follows a beta only after published-artifact validation passes,
+  including Docker and Parallels release checks for install/update coverage.
 - If a beta tag has been pushed or published and needs a fix, maintainers cut
   the next `-beta.N` tag instead of deleting or recreating the old beta tag
 - Detailed release procedure, approvals, credentials, and recovery notes are

@@ -287,6 +287,10 @@ node --import tsx scripts/openclaw-npm-postpublish-verify.ts <published-version>
     coverage or a failure needs local debugging.
 - Post-published beta verification roster:
   - `node --import tsx scripts/openclaw-npm-postpublish-verify.ts <beta-version>`
+  - experimental published npm Telegram lane: dispatch
+    `.github/workflows/npm-telegram-beta-e2e.yml` after the beta is visible on
+    npm, using `package_spec=openclaw@<beta-version>`; if it fails from workflow
+    or infrastructure instability, record it as experimental and continue
   - install/update smoke against the published beta channel
   - Docker install/update coverage that exercises the published beta package
   - Parallels published beta install/update coverage with both OpenAI and

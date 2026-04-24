@@ -94,6 +94,11 @@ OpenClaw has three public release lanes:
   `node --import tsx scripts/openclaw-npm-postpublish-verify.ts YYYY.M.D`
   (or the matching beta/correction version) to verify the published registry
   install path in a fresh temp prefix
+- After a beta npm publish, the experimental `NPM Telegram Beta E2E` workflow
+  (`.github/workflows/npm-telegram-beta-e2e.yml`) can be dispatched with
+  `package_spec=openclaw@YYYY.M.D-beta.N` after npm sees the package. Treat it
+  as extra signal; ignore workflow/infrastructure failure unless it exposes a
+  concrete release bug.
 - Maintainer release automation now uses preflight-then-promote:
   - real npm publish must pass a successful npm `preflight_run_id`
   - the real npm publish must be dispatched from the same `main` or

@@ -23,6 +23,9 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURE_DIR="${REPO_ROOT}/.test-fixtures"
 CADDY_BIN="${FIXTURE_DIR}/caddy-with-forwardproxy"
 FORCE="${1:-}"
+CADDY_VERSION="$(tr -d '[:space:]' < "${REPO_ROOT}/scripts/caddy-ssrf-version.txt")"
+XCADDY_VERSION="v0.4.5"
+FORWARDPROXY_VERSION="0aab84dad4fc2830789f34e27b4d7bc22a40889e"
 
 # 1. Check Go
 if ! command -v go >/dev/null 2>&1; then
@@ -53,7 +56,7 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 cd "${TMPDIR}"
 
 # Use go run to invoke xcaddy without requiring it to be globally installed
-GOBIN="${TMPDIR}/gobin" go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+GOBIN="${TMPDIR}/gobin" go install "github.com/caddyserver/xcaddy/cmd/xcaddy@${XCADDY_VERSION}"
 
 if [[ ! -x "${TMPDIR}/gobin/xcaddy" ]]; then
   echo "ERROR: failed to install xcaddy"
@@ -61,8 +64,8 @@ if [[ ! -x "${TMPDIR}/gobin/xcaddy" ]]; then
 fi
 
 # Build caddy with the forwardproxy plugin
-"${TMPDIR}/gobin/xcaddy" build \
-  --with github.com/caddyserver/forwardproxy@caddy2 \
+"${TMPDIR}/gobin/xcaddy" build "v${CADDY_VERSION}" \
+  --with "github.com/caddyserver/forwardproxy@${FORWARDPROXY_VERSION}" \
   --output "${CADDY_BIN}"
 
 if [[ ! -x "${CADDY_BIN}" ]]; then

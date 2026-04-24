@@ -40,6 +40,8 @@ export type CaddyProxyHandle = {
   pid: number | undefined;
   /** Gracefully stop the Caddy process. */
   stop: () => Promise<void>;
+  /** Synchronously signal the Caddy process during hard process exit. */
+  kill: (signal?: NodeJS.Signals) => void;
 };
 
 const CADDY_STARTUP_TIMEOUT_MS = 10_000;
@@ -157,6 +159,12 @@ async function waitForCaddyReady(params: {
     });
 
     if (ready) {
+      await new Promise((resolve) => setTimeout(resolve, CADDY_HEALTHCHECK_INTERVAL_MS));
+      if (proc.exitCode !== null || proc.killed) {
+        throw new Error(
+          `Caddy process exited unexpectedly during startup (exit code: ${proc.exitCode})`,
+        );
+      }
       return;
     }
 
@@ -366,7 +374,15 @@ async function startCaddyProxyOnPort(
     });
   };
 
-  return { port, proxyUrl, pid: proc.pid, stop };
+  const kill = (signal: NodeJS.Signals = "SIGTERM"): void => {
+    if (stopped || proc.exitCode !== null || proc.killed) {
+      return;
+    }
+    stopped = true;
+    proc.kill(signal);
+  };
+
+  return { port, proxyUrl, pid: proc.pid, stop, kill };
 }
 
 function withCaddyStderr(err: unknown, stderrLines: string[]): Error {

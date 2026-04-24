@@ -47,6 +47,11 @@ concurrency:
   group: build-caddy-ssrf-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  OPENCLAW_CADDY_GO_VERSION: "1.25.4"
+  OPENCLAW_XCADDY_VERSION: "v0.4.5"
+  OPENCLAW_FORWARDPROXY_VERSION: "0aab84dad4fc2830789f34e27b4d7bc22a40889e"
+
 jobs:
   resolve-version:
     name: Resolve Caddy version
@@ -120,14 +125,14 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "stable"
-          check-latest: true
+          go-version: ${{ env.OPENCLAW_CADDY_GO_VERSION }}
+          check-latest: false
 
       - name: Install xcaddy
         shell: bash
         run: |
           set -euo pipefail
-          go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
+          go install "github.com/caddyserver/xcaddy/cmd/xcaddy@${OPENCLAW_XCADDY_VERSION}"
           echo "$(go env GOPATH)/bin" >>"$GITHUB_PATH"
 
       - name: Build Caddy + forwardproxy
@@ -140,7 +145,7 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           xcaddy build "v${VERSION}" \
-            --with github.com/caddyserver/forwardproxy@caddy2 \
+            --with "github.com/caddyserver/forwardproxy@${OPENCLAW_FORWARDPROXY_VERSION}" \
             --output "dist/${ASSET_NAME}"
           chmod +x "dist/${ASSET_NAME}" || true
           ls -la dist/
@@ -220,6 +225,6 @@ jobs:
             `scripts/postinstall-ssrf-caddy.mjs` to populate
             `~/.openclaw/bin/caddy-ssrf` during `npm install openclaw`.
 
-            **Version:** Caddy v${{ env.VERSION }} with `github.com/caddyserver/forwardproxy@caddy2`.
+            **Version:** Caddy v${{ env.VERSION }} with pinned `github.com/caddyserver/forwardproxy`.
           files: |
             release/caddy-ssrf-*

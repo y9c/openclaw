@@ -61,8 +61,14 @@ export type SsrFProxyHandle = CaddyProxyHandle & {
  */
 const PROXY_ENV_KEYS = ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY"] as const;
 const GLOBAL_AGENT_PROXY_KEYS = ["GLOBAL_AGENT_HTTP_PROXY", "GLOBAL_AGENT_HTTPS_PROXY"] as const;
+const GLOBAL_AGENT_FORCE_KEYS = ["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"] as const;
 const NO_PROXY_ENV_KEYS = ["no_proxy", "NO_PROXY", "GLOBAL_AGENT_NO_PROXY"] as const;
-const ALL_PROXY_ENV_KEYS = [...PROXY_ENV_KEYS, ...GLOBAL_AGENT_PROXY_KEYS, ...NO_PROXY_ENV_KEYS];
+const ALL_PROXY_ENV_KEYS = [
+  ...PROXY_ENV_KEYS,
+  ...GLOBAL_AGENT_PROXY_KEYS,
+  ...GLOBAL_AGENT_FORCE_KEYS,
+  ...NO_PROXY_ENV_KEYS,
+] as const;
 type ProxyEnvKey = (typeof ALL_PROXY_ENV_KEYS)[number];
 type ProxyEnvSnapshot = Record<ProxyEnvKey, string | undefined>;
 
@@ -85,6 +91,7 @@ function captureProxyEnv(): ProxyEnvSnapshot {
     HTTPS_PROXY: process.env["HTTPS_PROXY"],
     GLOBAL_AGENT_HTTP_PROXY: process.env["GLOBAL_AGENT_HTTP_PROXY"],
     GLOBAL_AGENT_HTTPS_PROXY: process.env["GLOBAL_AGENT_HTTPS_PROXY"],
+    GLOBAL_AGENT_FORCE_GLOBAL_AGENT: process.env["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"],
     no_proxy: process.env["no_proxy"],
     NO_PROXY: process.env["NO_PROXY"],
     GLOBAL_AGENT_NO_PROXY: process.env["GLOBAL_AGENT_NO_PROXY"],
@@ -107,6 +114,7 @@ function injectProxyEnv(proxyUrl: string): ProxyEnvSnapshot {
   for (const key of GLOBAL_AGENT_PROXY_KEYS) {
     process.env[key] = proxyUrl;
   }
+  process.env["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"] = "true";
   // NO_PROXY is target-based. Leaving loopback or operator-provided bypasses
   // here would let those destinations skip the Caddy ACL entirely.
   for (const key of NO_PROXY_ENV_KEYS) {
@@ -148,6 +156,12 @@ function restoreGlobalAgentRuntime(snapshot: ProxyEnvSnapshot): void {
   agent["HTTP_PROXY"] = snapshot["GLOBAL_AGENT_HTTP_PROXY"] ?? "";
   agent["HTTPS_PROXY"] = snapshot["GLOBAL_AGENT_HTTPS_PROXY"] ?? "";
   agent["NO_PROXY"] = snapshot["GLOBAL_AGENT_NO_PROXY"] ?? null;
+  const forceGlobalAgent = snapshot["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"];
+  if (forceGlobalAgent === undefined) {
+    delete agent["forceGlobalAgent"];
+  } else {
+    agent["forceGlobalAgent"] = forceGlobalAgent !== "false";
+  }
 }
 
 /**
@@ -176,6 +190,7 @@ function bootstrapNodeHttpStack(proxyUrl: string): void {
     agent["HTTP_PROXY"] = proxyUrl;
     agent["HTTPS_PROXY"] = proxyUrl;
     agent["NO_PROXY"] = process.env["GLOBAL_AGENT_NO_PROXY"];
+    agent["forceGlobalAgent"] = true;
   }
 }
 
@@ -275,17 +290,45 @@ export async function startSsrFProxy(
     return null;
   }
 
-  // Step 1: Inject proxy URL into process.env BEFORE activating both layers.
-  injectedEnvSnapshot = injectProxyEnv(handle.proxyUrl);
+  try {
+    // Step 1: Inject proxy URL into process.env BEFORE activating both layers.
+    injectedEnvSnapshot = injectProxyEnv(handle.proxyUrl);
 
-  // Step 2 — Layer A: Force undici's global dispatcher to pick up the new env
-  // vars immediately. Without this, ensureGlobalUndiciEnvProxyDispatcher() would
-  // be a no-op because it was already called at CLI startup.
-  forceResetGlobalDispatcher();
+    // Step 2 — Layer A: Force undici's global dispatcher to pick up the new env
+    // vars immediately. Without this, ensureGlobalUndiciEnvProxyDispatcher() would
+    // be a no-op because it was already called at CLI startup.
+    forceResetGlobalDispatcher();
 
-  // Step 3 — Layer B: Bootstrap global-agent to monkey-patch node:http / node:https.
-  // This covers axios, got, and any other library that uses the http.request stack.
-  bootstrapNodeHttpStack(handle.proxyUrl);
+    // Step 3 — Layer B: Bootstrap global-agent to monkey-patch node:http / node:https.
+    // This covers axios, got, and any other library that uses the http.request stack.
+    bootstrapNodeHttpStack(handle.proxyUrl);
+  } catch (err) {
+    if (injectedEnvSnapshot != null) {
+      restoreProxyEnv(injectedEnvSnapshot);
+      injectedEnvSnapshot = null;
+    }
+    try {
+      restoreGlobalAgentRuntime(startupEnvSnapshot);
+    } catch (restoreErr) {
+      logWarn(
+        `ssrf-proxy: failed to reset global-agent after activation failure: ${String(restoreErr)}`,
+      );
+    }
+    try {
+      forceResetGlobalDispatcher();
+    } catch (resetErr) {
+      logWarn(`ssrf-proxy: failed to reset undici after activation failure: ${String(resetErr)}`);
+    }
+    try {
+      await handle.stop();
+    } catch (stopErr) {
+      logWarn(`ssrf-proxy: failed to stop Caddy after activation failure: ${String(stopErr)}`);
+    }
+    logWarn(
+      `ssrf-proxy: failed to activate proxy enforcement — falling back to application-level SSRF guards only. Reason: ${String(err)}`,
+    );
+    return null;
+  }
 
   logInfo(
     `ssrf-proxy: dual-stack network-level SSRF protection active via ${handle.proxyUrl}\n` +

@@ -9,6 +9,7 @@ import { normalizeEnv } from "../infra/env.js";
 import { formatUncaughtError } from "../infra/errors.js";
 import { isMainModule } from "../infra/is-main.js";
 import { startSsrFProxy, stopSsrFProxy } from "../infra/net/ssrf-proxy/proxy-lifecycle.js";
+import type { SsrFProxyHandle } from "../infra/net/ssrf-proxy/proxy-lifecycle.js";
 import { ensureGlobalUndiciEnvProxyDispatcher } from "../infra/net/undici-global-dispatcher.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
 import { assertSupportedRuntime } from "../infra/runtime-guard.js";
@@ -199,13 +200,18 @@ export async function runCli(argv: string[] = process.argv) {
   //   - If ssrfProxy is disabled or Caddy is missing, it logs a warning and
   //     openclaw continues with application-level guards only.
   // The handle is captured so we can shut Caddy down on exit.
-  let ssrfProxyHandle: Awaited<ReturnType<typeof startSsrFProxy>> = null;
+  let ssrfProxyHandle: SsrFProxyHandle | null = null;
   const stopStartedSsrFProxy = async () => {
     const handle = ssrfProxyHandle;
     ssrfProxyHandle = null;
     if (handle) {
       await stopSsrFProxy(handle);
     }
+  };
+  const killStartedSsrFProxy = () => {
+    const handle = ssrfProxyHandle;
+    ssrfProxyHandle = null;
+    handle?.kill("SIGTERM");
   };
   try {
     const { loadConfig } = await import("../config/io.js");
@@ -217,16 +223,9 @@ export async function runCli(argv: string[] = process.argv) {
     ssrfProxyHandle = null;
   }
   // Graceful shutdown — stop Caddy when openclaw exits via any signal.
-  // Note: we deliberately do NOT register a process.once("exit", ...) handler
-  // here. The 'exit' event is synchronous-only — calling an async function
-  // like stopSsrFProxy from it is a no-op because Node tears down the process
-  // before the returned Promise can resolve. The SIGTERM/SIGINT handlers
-  // below cover the normal shutdown paths; for hard process.exit() the OS
-  // will reap the child Caddy process when openclaw's pid dies anyway
-  // (Caddy is spawned without `detached: true`, so it shares our process
-  // group and will not be re-parented to init).
   let onSigterm: (() => void) | null = null;
   let onSigint: (() => void) | null = null;
+  let onExit: (() => void) | null = null;
   if (ssrfProxyHandle) {
     const shutdown = (exitCode: number) => {
       if (onSigterm) {
@@ -241,8 +240,10 @@ export async function runCli(argv: string[] = process.argv) {
     };
     onSigterm = () => shutdown(143);
     onSigint = () => shutdown(130);
+    onExit = () => killStartedSsrFProxy();
     process.once("SIGTERM", onSigterm);
     process.once("SIGINT", onSigint);
+    process.once("exit", onExit);
   }
 
   try {
@@ -347,6 +348,9 @@ export async function runCli(argv: string[] = process.argv) {
     }
     if (onSigint) {
       process.off("SIGINT", onSigint);
+    }
+    if (onExit) {
+      process.off("exit", onExit);
     }
     await stopStartedSsrFProxy();
     await closeCliMemoryManagers();

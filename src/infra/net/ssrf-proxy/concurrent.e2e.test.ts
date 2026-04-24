@@ -88,7 +88,9 @@ describe.skipIf(!isTestCaddyAvailable())(
       let blocked = 0;
       for (let i = 0; i < 200; i++) {
         const r = await fetch(`http://10.0.0.1/test-${i}`).catch(() => null);
-        if (!r || r.status >= 400) {blocked++;}
+        if (!r || r.status >= 400) {
+          blocked++;
+        }
       }
       expect(blocked).toBe(200);
     });

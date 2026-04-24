@@ -22894,6 +22894,33 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
           additionalProperties: false,
         },
       },
+      ssrfProxy: {
+        type: "object",
+        properties: {
+          enabled: {
+            type: "boolean",
+          },
+          binaryPath: {
+            type: "string",
+          },
+          extraBlockedCidrs: {
+            type: "array",
+            items: {
+              type: "string",
+            },
+          },
+          extraAllowedHosts: {
+            type: "array",
+            items: {
+              type: "string",
+            },
+          },
+          userProxy: {
+            not: {},
+          },
+        },
+        additionalProperties: false,
+      },
     },
     required: ["commands"],
     additionalProperties: false,

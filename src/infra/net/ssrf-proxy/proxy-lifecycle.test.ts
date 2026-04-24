@@ -46,6 +46,7 @@ function makeFakeHandle(port = 19876) {
     proxyUrl,
     pid: 99999,
     stop: vi.fn().mockResolvedValue(undefined),
+    kill: vi.fn(),
   };
 }
 
@@ -60,6 +61,7 @@ describe("startSsrFProxy — env var injection", () => {
     "NO_PROXY",
     "GLOBAL_AGENT_HTTP_PROXY",
     "GLOBAL_AGENT_HTTPS_PROXY",
+    "GLOBAL_AGENT_FORCE_GLOBAL_AGENT",
     "GLOBAL_AGENT_NO_PROXY",
   ];
 
@@ -143,6 +145,30 @@ describe("startSsrFProxy — env var injection", () => {
 
     expect(process.env["GLOBAL_AGENT_HTTP_PROXY"]).toBe(fake.proxyUrl);
     expect(process.env["GLOBAL_AGENT_HTTPS_PROXY"]).toBe(fake.proxyUrl);
+    expect(process.env["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"]).toBe("true");
+  });
+
+  it("forces global-agent even when the operator env disabled it before startup", async () => {
+    process.env["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"] = "false";
+    const fake = makeFakeHandle();
+    mockStartCaddyProxy.mockResolvedValue(fake);
+    (global as Record<string, unknown>)["GLOBAL_AGENT"] = {
+      HTTP_PROXY: "",
+      HTTPS_PROXY: "",
+      forceGlobalAgent: false,
+    };
+
+    const handle = await startSsrFProxy({ enabled: true });
+    expect(handle).not.toBeNull();
+
+    const agent = (global as Record<string, unknown>)["GLOBAL_AGENT"] as Record<string, unknown>;
+    expect(process.env["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"]).toBe("true");
+    expect(agent["forceGlobalAgent"]).toBe(true);
+
+    await stopSsrFProxy(handle);
+
+    expect(process.env["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"]).toBe("false");
+    expect(agent["forceGlobalAgent"]).toBe(false);
   });
 
   it("clears NO_PROXY so loopback targets still go through Caddy", async () => {
@@ -228,6 +254,37 @@ describe("startSsrFProxy — env var injection", () => {
     // global-agent namespace
     expect(process.env["GLOBAL_AGENT_HTTP_PROXY"]).toBeUndefined();
     expect(process.env["GLOBAL_AGENT_HTTPS_PROXY"]).toBeUndefined();
+    expect(process.env["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"]).toBeUndefined();
+  });
+
+  it("stops Caddy and restores env when undici activation fails", async () => {
+    const fake = makeFakeHandle();
+    mockStartCaddyProxy.mockResolvedValue(fake);
+    mockForceResetGlobalDispatcher.mockImplementationOnce(() => {
+      throw new Error("dispatcher failed");
+    });
+
+    const handle = await startSsrFProxy({ enabled: true });
+
+    expect(handle).toBeNull();
+    expect(fake.stop).toHaveBeenCalledOnce();
+    expect(process.env["http_proxy"]).toBeUndefined();
+    expect(process.env["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"]).toBeUndefined();
+  });
+
+  it("stops Caddy and restores env when global-agent bootstrap fails", async () => {
+    const fake = makeFakeHandle();
+    mockStartCaddyProxy.mockResolvedValue(fake);
+    mockBootstrapGlobalAgent.mockImplementationOnce(() => {
+      throw new Error("bootstrap failed");
+    });
+
+    const handle = await startSsrFProxy({ enabled: true });
+
+    expect(handle).toBeNull();
+    expect(fake.stop).toHaveBeenCalledOnce();
+    expect(process.env["http_proxy"]).toBeUndefined();
+    expect(process.env["GLOBAL_AGENT_FORCE_GLOBAL_AGENT"]).toBeUndefined();
   });
 
   it("calls forceResetGlobalDispatcher on stop() (Layer A reset)", async () => {

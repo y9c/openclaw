@@ -123,11 +123,13 @@ function makeSsrFProxyHandle() {
       HTTPS_PROXY: undefined,
       GLOBAL_AGENT_HTTP_PROXY: undefined,
       GLOBAL_AGENT_HTTPS_PROXY: undefined,
+      GLOBAL_AGENT_FORCE_GLOBAL_AGENT: undefined,
       no_proxy: undefined,
       NO_PROXY: undefined,
       GLOBAL_AGENT_NO_PROXY: undefined,
     },
     stop: vi.fn(async () => {}),
+    kill: vi.fn(),
   };
 }
 
@@ -212,6 +214,39 @@ describe("runCli exit behavior", () => {
       expect(stopSsrFProxyMock).toHaveBeenCalledTimes(1);
     } finally {
       exitSpy.mockRestore();
+      processOnceSpy.mockRestore();
+    }
+  });
+
+  it("synchronously kills the SSRF proxy during hard process exit", async () => {
+    const handle = makeSsrFProxyHandle();
+    startSsrFProxyMock.mockResolvedValueOnce(handle);
+
+    let resolveRoute: (value: boolean) => void = () => {};
+    tryRouteCliMock.mockReturnValueOnce(
+      new Promise<boolean>((resolve) => {
+        resolveRoute = resolve;
+      }),
+    );
+
+    const processOnceSpy = vi.spyOn(process, "once");
+    try {
+      const runPromise = runCli(["node", "openclaw", "status"]);
+      await vi.waitFor(() => {
+        expect(processOnceSpy.mock.calls.filter(([event]) => event === "exit")).toHaveLength(2);
+      });
+
+      const exitHandler = processOnceSpy.mock.calls.findLast(([event]) => event === "exit")?.[1];
+      if (typeof exitHandler !== "function") {
+        throw new Error("exit handler was not registered");
+      }
+      exitHandler(0 as never);
+
+      expect(handle.kill).toHaveBeenCalledWith("SIGTERM");
+      resolveRoute(true);
+      await runPromise;
+      expect(stopSsrFProxyMock).not.toHaveBeenCalledWith(handle);
+    } finally {
       processOnceSpy.mockRestore();
     }
   });

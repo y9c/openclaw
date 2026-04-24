@@ -1,18 +1,10 @@
 /**
- * DNS Rebinding TOCTOU regression test.
+ * Proxy-side resolution regression tests.
  *
- * This is the WHOLE POINT of this feature. The original `fetchWithSsrFGuard`
- * was vulnerable to DNS rebinding attacks because it resolved DNS at check-time,
- * then re-resolved (or trusted the resolution) at use-time. An attacker who
- * controlled DNS could:
- *   1. First lookup: return a public IP (passes safety check)
- *   2. Second lookup (during connect): return 127.0.0.1 (TOCTOU bypass)
- *
- * With Caddy as a forward proxy, the IP check happens in the same syscall
- * as the connection — there is NO time-of-check vs time-of-use gap.
- *
- * This test simulates a rebinding attacker by using a custom DNS lookup that
- * returns different IPs on different calls.
+ * These tests verify the important property of the sidecar design: callers send
+ * hostnames to Caddy, and Caddy resolves and checks the target immediately
+ * before dialing it. That means localhost-style targets are still blocked even
+ * when the client-side HTTP stack is routed through a global proxy.
  */
 
 import { setGlobalDispatcher, ProxyAgent, Agent as UndiciAgent, getGlobalDispatcher } from "undici";
@@ -28,7 +20,7 @@ import { createVictimServer, type VictimServer } from "./test-helpers/victim-ser
 const TEST_TIMEOUT_MS = 30_000;
 
 describe.skipIf(!isTestCaddyAvailable())(
-  "SSRF DNS Rebinding E2E — TOCTOU is closed",
+  "SSRF proxy E2E — proxy-side resolution blocks local targets",
   { timeout: TEST_TIMEOUT_MS },
   () => {
     let caddy: CaddyProxyHandle;
@@ -88,11 +80,10 @@ describe.skipIf(!isTestCaddyAvailable())(
       expect(victim.hits.length).toBe(0);
     });
 
-    it("multiple sequential requests to the same blocked target stay blocked (no DNS cache poisoning)", async () => {
+    it("multiple sequential requests to the same blocked target stay blocked", async () => {
       victim.reset();
 
-      // If there were a DNS cache TOCTOU window, repeated requests might exploit it.
-      // With a forward proxy, Caddy's per-request ACL evaluation closes that window.
+      // With a forward proxy, Caddy's ACL is applied on each request.
       for (let i = 0; i < 5; i++) {
         const res = await fetch(`http://127.0.0.1:${victim.port()}/iter-${i}`).catch(() => null);
         if (res) {
@@ -102,16 +93,11 @@ describe.skipIf(!isTestCaddyAvailable())(
       expect(victim.hits.length).toBe(0);
     });
 
-    it("KEY ASSERTION: even if client-side DNS returns a 'safe' IP, Caddy re-resolves and blocks", async () => {
+    it("KEY ASSERTION: Caddy resolves and blocks localhost-style hostnames itself", async () => {
       // The defining property of a forward-proxy SSRF defense:
       // The CLIENT does NOT do DNS resolution at all — it sends the
       // hostname to the proxy in the absolute URL, and the PROXY does
       // the resolution + ACL check together as one atomic operation.
-      //
-      // This means:
-      //   - DNS rebinding is impossible (no time gap to exploit)
-      //   - Client-side resolver poisoning is irrelevant (proxy uses its own resolver)
-      //   - /etc/hosts manipulation only matters on the proxy host (which is also us)
       //
       // We verify the property by checking that requests don't even include
       // the IP in the URL — they include the hostname, and Caddy resolves it.
@@ -119,15 +105,19 @@ describe.skipIf(!isTestCaddyAvailable())(
 
       // Use 'localhost' (resolves to 127.0.0.1 — blocked)
       const res1 = await fetch(`http://localhost:${victim.port()}/dns-test-1`).catch(() => null);
-      if (res1) {expect(res1.status).toBeGreaterThanOrEqual(400);}
+      if (res1) {
+        expect(res1.status).toBeGreaterThanOrEqual(400);
+      }
 
       // Use 'localhost.localdomain' (also blocked by hostname match)
       const res2 = await fetch(`http://localhost.localdomain:${victim.port()}/dns-test-2`).catch(
         () => null,
       );
-      if (res2) {expect(res2.status).toBeGreaterThanOrEqual(400);}
+      if (res2) {
+        expect(res2.status).toBeGreaterThanOrEqual(400);
+      }
 
-      // Both blocked — TOCTOU eliminated
+      // Both blocked by proxy-side target resolution / ACL evaluation.
       expect(victim.hits.length).toBe(0);
     });
   },

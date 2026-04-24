@@ -2,9 +2,9 @@
  * Generates a Caddy JSON configuration for the openclaw SSRF-blocking forward proxy.
  *
  * The Caddy sidecar is the network-level enforcement point that blocks connections
- * to private/internal IP ranges at TOU (time-of-use), after TCP connection is
- * established. This eliminates the DNS-rebinding TOCTOU window that exists in
- * application-level DNS pinning.
+ * to private/internal IP ranges at TOU (time-of-use), inside the proxy when it
+ * resolves and dials the target. This closes the DNS-rebinding TOCTOU window
+ * that exists in application-level DNS pinning.
  *
  * Requires the caddy-forwardproxy plugin:
  *   https://github.com/caddyserver/forwardproxy
@@ -26,6 +26,12 @@ export const DEFAULT_BLOCKED_CIDRS: readonly string[] = [
   "100.64.0.0/10",
   // RFC 2544 benchmarking range
   "198.18.0.0/15",
+  // IETF protocol assignments / special-use ranges
+  "192.0.0.0/24",
+  "192.0.2.0/24",
+  "192.88.99.0/24",
+  "198.51.100.0/24",
+  "203.0.113.0/24",
   // IPv4 multicast
   "224.0.0.0/4",
   // IPv4 reserved / broadcast
@@ -48,12 +54,18 @@ export const DEFAULT_BLOCKED_CIDRS: readonly string[] = [
   "2001:2::/48",
   // IPv6 ORCHIDv2
   "2001:20::/28",
+  // IPv6 documentation prefix
+  "2001:db8::/32",
+  // Well-known NAT64 prefix with embedded IPv4
+  "64:ff9b::/96",
   // NAT64 local-use prefix with embedded IPv4
   "64:ff9b:1::/48",
   // 6to4 prefix with embedded IPv4
   "2002::/16",
   // Teredo prefix with embedded IPv4
   "2001::/32",
+  // Deprecated IPv4-compatible IPv6 addresses
+  "::/96",
   // IPv4-mapped IPv6 addresses
   "::ffff:0:0/96",
 ];

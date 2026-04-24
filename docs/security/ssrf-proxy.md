@@ -6,7 +6,7 @@ openclaw can run a **network-level SSRF (Server-Side Request Forgery) protection
 
 Application-level DNS pinning (the existing `fetchWithSsrFGuard`) has a **TOCTOU (time-of-check / time-of-use) window**: it resolves DNS at check time and pins the IP, but a sufficiently fast DNS rebinding attack can swap the IP between the check and the actual TCP connection.
 
-The Caddy sidecar eliminates this window by enforcing IP blocklists **at TOU** — after the TCP connection is established and the kernel has resolved the IP — making it impossible for a rebinding attack to bypass the block.
+The Caddy sidecar closes this window by enforcing IP blocklists **at TOU** inside the proxy when it resolves and dials the target. A caller sends the hostname to Caddy, and Caddy applies its ACL to the address it is about to connect to.
 
 ## How It Works
 
@@ -93,7 +93,7 @@ If you need a custom build (different Caddy version, additional plugins, an unsu
 **Option 1 — Build with xcaddy:**
 
 ```bash
-xcaddy build --with github.com/caddyserver/forwardproxy@caddy2
+xcaddy build v2.11.1 --with github.com/caddyserver/forwardproxy@0aab84dad4fc2830789f34e27b4d7bc22a40889e
 mkdir -p ~/.openclaw/bin
 mv caddy ~/.openclaw/bin/caddy-ssrf
 ```
@@ -161,31 +161,39 @@ If `HTTP_PROXY` or `HTTPS_PROXY` is already set when openclaw starts, the Caddy 
 
 The following IP ranges are blocked by default:
 
-| Range            | Description                                                   |
-| ---------------- | ------------------------------------------------------------- |
-| `127.0.0.0/8`    | IPv4 loopback                                                 |
-| `0.0.0.0/8`      | IPv4 "this network" (SSRF bypass vector on some OS stacks)    |
-| `169.254.0.0/16` | IPv4 link-local (covers AWS/Azure metadata `169.254.169.254`) |
-| `10.0.0.0/8`     | RFC-1918 private                                              |
-| `172.16.0.0/12`  | RFC-1918 private                                              |
-| `192.168.0.0/16` | RFC-1918 private                                              |
-| `100.64.0.0/10`  | CGNAT / shared address space                                  |
-| `198.18.0.0/15`  | RFC 2544 benchmarking range                                   |
-| `224.0.0.0/4`    | IPv4 multicast                                                |
-| `240.0.0.0/4`    | IPv4 reserved                                                 |
-| `::1/128`        | IPv6 loopback                                                 |
-| `::/128`         | IPv6 unspecified                                              |
-| `100::/64`       | IPv6 discard prefix                                           |
-| `fe80::/10`      | IPv6 link-local                                               |
-| `fc00::/7`       | IPv6 ULA (private)                                            |
-| `fec0::/10`      | Deprecated IPv6 site-local                                    |
-| `ff00::/8`       | IPv6 multicast                                                |
-| `2001:2::/48`    | IPv6 benchmarking range                                       |
-| `2001:20::/28`   | IPv6 ORCHIDv2                                                 |
-| `64:ff9b:1::/48` | NAT64 local-use prefix                                        |
-| `2002::/16`      | 6to4 prefix with embedded IPv4                                |
-| `2001::/32`      | Teredo prefix with embedded IPv4                              |
-| `::ffff:0:0/96`  | IPv4-mapped IPv6 (e.g. `::ffff:7f00:1` form of `127.0.0.1`)   |
+| Range             | Description                                                   |
+| ----------------- | ------------------------------------------------------------- |
+| `127.0.0.0/8`     | IPv4 loopback                                                 |
+| `0.0.0.0/8`       | IPv4 "this network" (SSRF bypass vector on some OS stacks)    |
+| `169.254.0.0/16`  | IPv4 link-local (covers AWS/Azure metadata `169.254.169.254`) |
+| `10.0.0.0/8`      | RFC-1918 private                                              |
+| `172.16.0.0/12`   | RFC-1918 private                                              |
+| `192.168.0.0/16`  | RFC-1918 private                                              |
+| `100.64.0.0/10`   | CGNAT / shared address space                                  |
+| `198.18.0.0/15`   | RFC 2544 benchmarking range                                   |
+| `192.0.0.0/24`    | IETF protocol assignments / special-use addresses             |
+| `192.0.2.0/24`    | TEST-NET-1                                                    |
+| `192.88.99.0/24`  | 6to4 relay anycast                                            |
+| `198.51.100.0/24` | TEST-NET-2                                                    |
+| `203.0.113.0/24`  | TEST-NET-3                                                    |
+| `224.0.0.0/4`     | IPv4 multicast                                                |
+| `240.0.0.0/4`     | IPv4 reserved                                                 |
+| `::1/128`         | IPv6 loopback                                                 |
+| `::/128`          | IPv6 unspecified                                              |
+| `100::/64`        | IPv6 discard prefix                                           |
+| `fe80::/10`       | IPv6 link-local                                               |
+| `fc00::/7`        | IPv6 ULA (private)                                            |
+| `fec0::/10`       | Deprecated IPv6 site-local                                    |
+| `ff00::/8`        | IPv6 multicast                                                |
+| `2001:2::/48`     | IPv6 benchmarking range                                       |
+| `2001:20::/28`    | IPv6 ORCHIDv2                                                 |
+| `2001:db8::/32`   | IPv6 documentation prefix                                     |
+| `64:ff9b::/96`    | Well-known NAT64 prefix                                       |
+| `64:ff9b:1::/48`  | NAT64 local-use prefix                                        |
+| `2002::/16`       | 6to4 prefix with embedded IPv4                                |
+| `2001::/32`       | Teredo prefix with embedded IPv4                              |
+| `::/96`           | Deprecated IPv4-compatible IPv6                               |
+| `::ffff:0:0/96`   | IPv4-mapped IPv6 (e.g. `::ffff:7f00:1` form of `127.0.0.1`)   |
 
 The following hostnames are always blocked regardless of their resolved IP:
 

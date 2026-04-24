@@ -1151,15 +1151,15 @@ export const FIELD_HELP: Record<string, string> = {
   "agents.defaults.model.fallbacks":
     "Ordered fallback models (provider/model). Used when the primary model fails.",
   "agents.defaults.embeddedHarness":
-    "Default embedded agent harness policy. Use runtime=auto for plugin harness selection, runtime=pi for built-in PI, or a registered harness id such as codex.",
+    "Default embedded agent harness policy. Omitted runtime uses built-in OpenClaw Pi. Use runtime=auto for plugin harness selection, or a registered harness id such as codex.",
   "agents.defaults.embeddedHarness.runtime":
-    "Embedded harness runtime: auto, pi, or a registered plugin harness id such as codex.",
+    "Embedded harness runtime: pi, auto, or a registered plugin harness id such as codex. Omitted runtime uses built-in OpenClaw Pi.",
   "agents.defaults.embeddedHarness.fallback":
     "Embedded harness fallback when no plugin harness matches. Selected plugin harness failures surface directly. Set none to disable automatic PI fallback.",
   "agents.list.*.embeddedHarness":
     "Per-agent embedded harness policy override. Use fallback=none to make missing plugin harness selection fail instead of falling back to PI.",
   "agents.list.*.embeddedHarness.runtime":
-    "Per-agent embedded harness runtime: auto, pi, or a registered plugin harness id such as codex.",
+    "Per-agent embedded harness runtime: pi, auto, or a registered plugin harness id such as codex. Omitted runtime inherits the default OpenClaw Pi behavior.",
   "agents.list.*.embeddedHarness.fallback":
     "Per-agent embedded harness fallback. Set none to disable automatic PI fallback for this agent.",
   "agents.defaults.imageModel.primary":

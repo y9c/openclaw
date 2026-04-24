@@ -4,23 +4,23 @@
 **Browser:** WebKit (Safari)
 **Gateway:** Dev gateway on port 19004 (worktree `lifecycle-hooks`)
 **Model:** claude-opus-4-6 via atlassian-ai-gateway-proxy
-**Suite:** 11 tests, 1.5m total runtime
+**Suite:** 9 tests
 
 ## Results Summary
 
-| #   | Test                                                                                    | Status  | Time  |
-| --- | --------------------------------------------------------------------------------------- | ------- | ----- |
-| 1   | Normal message (no hook trigger)                                                        | ✅ Pass | 5.0s  |
-| 2   | HOOK_BLOCK_RUN — before_agent_run block                                                 | ✅ Pass | 2.3s  |
-| 3   | HOOK_ASK_RUN — before_agent_run ask (approve)                                           | ✅ Pass | 6.4s  |
-| 4   | HOOK_ASK_RUN — before_agent_run ask (deny)                                              | ✅ Pass | 2.3s  |
-| 5   | HOOK_BLOCK_OUTPUT — llm_output block                                                    | ✅ Pass | 8.7s  |
-| 6   | HOOK_BLOCK_OUTPUT — UI replaces streamed text with block warning                        | ✅ Pass | 15.0s |
-| 7   | HOOK_BLOCK_RETRY — llm_output block with retry                                          | ✅ Pass | 6.4s  |
-| 8   | HOOK_ASK_OUTPUT — llm_output ask (approve)                                              | ✅ Pass | 8.8s  |
-| 9   | HOOK_ASK_OUTPUT — llm_output ask (deny)                                                 | ✅ Pass | 6.0s  |
-| 10  | HOOK_ASK_TOOL_INPUT — must pause tool dispatch for approval                             | ✅ Pass | 6.5s  |
-| 11  | HOOK_BLOCK_RETRY — retry notices appear as assistant bubbles, no duplicate user bubbles | ✅ Pass | 20.8s |
+| #   | Test                                                                                    | Status  |
+| --- | --------------------------------------------------------------------------------------- | ------- |
+| 1   | Normal message (no hook trigger)                                                        | ✅ Pass |
+| 2   | HOOK_BLOCK_RUN — before_agent_run block                                                 | ✅ Pass |
+| 3   | HOOK_ASK_RUN — before_agent_run ask (approve)                                           | ✅ Pass |
+| 4   | HOOK_ASK_RUN — before_agent_run ask (deny)                                              | ✅ Pass |
+| 5   | HOOK_BLOCK_OUTPUT — llm_output block                                                    | ✅ Pass |
+| 6   | HOOK_BLOCK_OUTPUT — UI replaces streamed text with block warning                        | ✅ Pass |
+| 7   | HOOK_BLOCK_RETRY — llm_output block with retry                                          | ✅ Pass |
+| 8   | HOOK_ASK_TOOL_INPUT — must pause tool dispatch for approval                             | ✅ Pass |
+| 9   | HOOK_BLOCK_RETRY — retry notices appear as assistant bubbles, no duplicate user bubbles | ✅ Pass |
+
+> **Removed:** `HOOK_ASK_OUTPUT` (llm_output ask) — not enforceable for tool-using turns. See `docs/refactor/hook-output-gating-limitations.md`.
 
 ## Trigger Taxonomy
 
@@ -30,7 +30,6 @@
 | `HOOK_ASK_RUN`          | `before_agent_run` | Approval prompt before LLM call. Approve → normal. Deny → user bubble preserved, turn ends.                                                                                                            |
 | `HOOK_BLOCK_OUTPUT`     | `llm_output`       | Block LLM text reply. Streamed text replaced with `⚠️ Agent failed before reply:` block notice. Persisted JSONL scrubbed so reload doesn't resurrect original text.                                    |
 | `HOOK_BLOCK_RETRY`      | `llm_output`       | Block + retry. Each attempt's assistant bubble replaced in-place with `⚠️ Response blocked — retrying (N/M)...`. No duplicate user bubbles. Final message shows `⚠️ Response blocked after N retries.` |
-| `HOOK_ASK_OUTPUT`       | `llm_output`       | Approval prompt on LLM text. Approve → text delivered. Deny → text replaced with denial notice.                                                                                                        |
 | `HOOK_BLOCK_TOOL_INPUT` | `before_tool_call` | Block tool execution. Tool body never runs (no side effects). Styled block message.                                                                                                                    |
 | `HOOK_ASK_TOOL_INPUT`   | `before_tool_call` | Approval prompt before tool execution. Approve → tool runs. Deny → tool blocked.                                                                                                                       |
 

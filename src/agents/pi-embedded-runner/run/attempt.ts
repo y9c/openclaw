@@ -2348,18 +2348,21 @@ export async function runEmbeddedAttempt(
             });
 
             if (isRetryAttempt) {
-              // On retry, pass empty string so the SDK does NOT add another
-              // visible user message. The conversation context already
-              // contains the original user message from the first attempt,
-              // so the model will retry from that state.
-              await abortable(activeSession.prompt(""));
-              // Scrub the empty user message the SDK just persisted.
+              // On retry, re-send the original prompt so the LLM has clear
+              // input to respond to. Empty-string prompts confuse the
+              // model: it sees [user, user(empty)] after the prior
+              // assistant text was redacted and returns empty text. By
+              // re-sending the original prompt we get a fresh attempt;
+              // the SDK appends a duplicate user message which we scrub
+              // immediately after via redactDuplicateUserMessage.
+              await abortable(activeSession.prompt(effectivePrompt));
               try {
                 const { redactDuplicateUserMessage } =
                   await import("../../../plugins/hook-redaction.js");
-                await redactDuplicateUserMessage(params.sessionFile, "");
+                await redactDuplicateUserMessage(params.sessionFile, effectivePrompt);
               } catch {
-                // Best-effort cleanup; empty message is harmless if left.
+                // Best-effort cleanup; duplicate user is cosmetically
+                // tolerable if redaction fails.
               }
             } else if (imageResult.images.length > 0) {
               // Only pass images option if there are actually images to pass
@@ -2865,16 +2868,44 @@ export async function runEmbeddedAttempt(
               log.warn(
                 `llm_output hook blocked by ${llmOutputPluginId} (retry ${retryNum}/${maxRetries}): ${llmOutputDecision.reason}`,
               );
-              // Replace the rejected response in-place with a retry notice so
-              // the user sees what happened instead of a vanishing bubble.
-              const retryNotice =
-                `⚠️ Response blocked — retrying (${retryNum}/${maxRetries})...\n` +
-                `Reason: ${llmOutputDecision.reason}`;
+              // Scrub the rejected assistant text from the transcript. Do
+              // NOT persist a retry-notice replacement: persisting it would
+              // inject a fake assistant turn into the LLM's conversation
+              // history, and the next attempt would see "I already
+              // answered" and return empty text. Each retry attempt's
+              // streamed text will appear in a new assistant bubble under
+              // the same runId (chatLink kept alive — see lifecycle
+              // handling below). On final exhaustion the regular
+              // hook_block terminal path persists the final block message
+              // so it survives reload.
               await replaceLlmOutputResponse(
                 llmOutputDecision.reason,
                 "llm_output:retry",
-                retryNotice,
+                undefined,
               );
+              // Broadcast a chat-level "retry" event so server-chat clears
+              // its accumulated text buffer for this runId, and so the SPA
+              // resets `chatStream` to "" before the next attempt starts
+              // streaming. Without this, the next attempt's deltas get
+              // appended to the prior attempt's buffer via
+              // `appendUniqueSuffix`, producing a frankenstein bubble that
+              // is then immediately replaced by the final block message
+              // (visible symptom: "no bubble at all" between attempts).
+              try {
+                emitAgentEvent({
+                  runId: params.runId,
+                  stream: "chat_retry",
+                  data: {
+                    retryCount: llmOutputRetryCount + 1,
+                    maxRetries,
+                    reason: llmOutputDecision.reason,
+                  },
+                });
+              } catch {
+                // best-effort; if the event doesn't fire the next attempt
+                // will still produce a frankenstein bubble but the LLM
+                // output itself is correct.
+              }
               llmOutputRetryCount += 1;
               llmOutputRetryRequested = true;
               // Mark for the outer attempt loop to re-invoke the LLM.
@@ -2895,52 +2926,34 @@ export async function runEmbeddedAttempt(
                   `Reason: ${llmOutputDecision.reason}\nLogs: openclaw logs --follow`
                 : message;
               await replaceLlmOutputResponse(llmOutputDecision.reason, "llm_output", finalMessage);
-              promptError = new Error(message);
+              // Use the user-facing finalMessage (which was just persisted
+              // to the transcript) as the lifecycle error text. This is
+              // what the SPA's chat-final bubble will display. Without
+              // this, server-chat broadcasts the hook's verbose `message`
+              // ("🔁 [hook-echo] Response was blocked and retried...") as
+              // a fleeting `state: "final"` payload that gets immediately
+              // overwritten by the proper "⚠️ Response blocked after N
+              // retries..." bubble — producing a confusing flash.
+              promptError = new Error(finalMessage);
               promptErrorSource = "hook:llm_output";
               llmOutputRetryRequested = false;
             }
-          } else if (llmOutputDecision?.outcome === "ask") {
+          }
+          // NOTE: `llm_output` ASK is intentionally not handled here.
+          // The post-prompt() ASK path was removed because it cannot
+          // actually pause the SDK's loop — by the time approval was
+          // requested, the agent had already completed all tool calls
+          // and the user-visible UX was a confusing "review the past"
+          // dialog. See `docs/refactor/hook-output-gating-limitations.md`
+          // for the architectural reason and the path forward.
+          // Plugins returning `outcome: "ask"` from `llm_output` will
+          // now be silently ignored at this seam (with a debug warning
+          // logged). To gate LLM output today, use `outcome: "block"`
+          // (with optional `retry: true`) which works correctly.
+          else if (llmOutputDecision?.outcome === "ask") {
             log.warn(
-              `llm_output hook requesting approval (${llmOutputPluginId}): ${llmOutputDecision.reason}`,
+              `llm_output hook requested ASK (${llmOutputPluginId}) but ASK is not enforceable for tool-using turns; see docs/refactor/hook-output-gating-limitations.md. Treating as no-op.`,
             );
-            const { requestHookApproval } = await import("../../../plugins/hook-approval.js");
-            const approvalResult = await requestHookApproval({
-              hookPoint: "llm_output",
-              decision: llmOutputDecision,
-              pluginId: llmOutputPluginId,
-              runId: params.runId,
-              sessionKey: params.sessionKey,
-              agentId: hookAgentId,
-              channelId: params.messageChannel ?? params.messageProvider ?? undefined,
-              signal: params.abortSignal,
-              log,
-            });
-            const shouldDeny =
-              approvalResult === "deny" ||
-              approvalResult === "cancelled" ||
-              (approvalResult === "timeout" &&
-                (llmOutputDecision.timeoutBehavior ?? "deny") === "deny");
-            if (shouldDeny) {
-              const denialMessage =
-                llmOutputDecision.denialMessage ?? "Response withheld pending review.";
-              log.warn(
-                `llm_output hook approval ${approvalResult} (plugin=${llmOutputPluginId}), withholding response${approvalResult === "cancelled" ? " — no approval route available" : ""}`,
-              );
-              await replaceLlmOutputResponse(
-                llmOutputDecision.reason,
-                "llm_output:ask",
-                denialMessage,
-              );
-              // Surface the denial through the error path so the
-              // streaming buffer (which already delivered the original
-              // text) is overridden by the error event.
-              promptError = new Error(denialMessage);
-              promptErrorSource = "hook:llm_output";
-            } else {
-              log.debug(
-                `llm_output hook approval granted (${approvalResult}), delivering response`,
-              );
-            }
           }
 
           // The lifecycle terminal event was deferred while the hook ran.
@@ -2955,11 +2968,37 @@ export async function runEmbeddedAttempt(
               promptError instanceof Error
                 ? promptError.message
                 : ((promptError as Error)?.message ?? promptError);
-            resolveTerminalLifecycle({ error: errMsg });
+            // When the error came from an llm_output hook block, route
+            // through the hook_block path so server-chat emits the
+            // assistant-replacement final + error pair using the
+            // user-facing message we already set on `promptError` above
+            // ("⚠️ Response blocked after N retries..."). Without
+            // `errorKind: "hook_block"` the lifecycle handler emits a
+            // plain "done" final whose UI bubble would be sourced from a
+            // different code path, breaking the unified retry-block UX.
+            const errorKind: "hook_block" | undefined =
+              promptErrorSource === "hook:llm_output" ? "hook_block" : undefined;
+            resolveTerminalLifecycle(errorKind ? { error: errMsg, errorKind } : { error: errMsg });
           } else if (promptErrorSource === "hook:llm_output") {
-            // Retry case: the original response was scrubbed; emit error to
-            // clear the streaming buffer before the retry starts fresh.
-            resolveTerminalLifecycle({ error: "Response blocked by policy — retrying." });
+            // llm_output block path. Two sub-cases:
+            //   - `llmOutputRetryRequested === true` → another retry attempt
+            //     is queued. Mirror the provider-failure retry pattern:
+            //     do NOT emit any terminal lifecycle event. The chatLink,
+            //     chatRunState, and chatStream all stay alive so the next
+            //     attempt's streamed deltas continue to render against the
+            //     same runId. The SPA never sees the retry as a terminal
+            //     event; it just sees the next attempt's text replace the
+            //     previous attempt's text.
+            //   - `llmOutputRetryRequested === false` → final exhaustion
+            //     (or non-retry block). Emit a normal terminal `hook_block`
+            //     so the SPA finalizes the turn with the block message.
+            if (!llmOutputRetryRequested) {
+              resolveTerminalLifecycle({
+                error: "Response blocked by policy.",
+                errorKind: "hook_block",
+              });
+            }
+            // else: silent — no lifecycle event, next attempt will continue.
           } else {
             resolveTerminalLifecycle();
           }

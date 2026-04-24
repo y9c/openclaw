@@ -64,6 +64,17 @@ export type ChatProps = {
   streamSegments: Array<{ text: string; ts: number }>;
   stream: string | null;
   streamStartedAt: number | null;
+  /**
+   * Live retry notice surfaced when an llm_output hook is retrying. When
+   * present, the streaming bubble (or reading indicator if the next
+   * attempt hasn't started yet) gets a muted footer telling the user
+   * "🔁 Retrying 1/2 — last attempt blocked by ...".
+   */
+  retryNotice?: {
+    retryCount: number;
+    maxRetries: number;
+    reason: string;
+  } | null;
   assistantAvatarUrl?: string | null;
   draft: string;
   queue: ChatQueueItem[];
@@ -1242,7 +1253,11 @@ export function renderChat(props: ChatProps) {
               `;
             }
             if (item.kind === "reading-indicator") {
-              return renderReadingIndicatorGroup(assistantIdentity, props.basePath);
+              return renderReadingIndicatorGroup(
+                assistantIdentity,
+                props.basePath,
+                props.retryNotice ?? null,
+              );
             }
             if (item.kind === "stream") {
               return renderStreamingGroup(
@@ -1251,6 +1266,7 @@ export function renderChat(props: ChatProps) {
                 props.onOpenSidebar,
                 assistantIdentity,
                 props.basePath,
+                props.retryNotice ?? null,
               );
             }
             if (item.kind === "group") {

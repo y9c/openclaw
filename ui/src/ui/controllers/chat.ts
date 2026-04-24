@@ -113,15 +113,30 @@ export type ChatState = {
   chatRunId: string | null;
   chatStream: string | null;
   chatStreamStartedAt: number | null;
+  /**
+   * Live retry status surfaced when an llm_output hook blocks a response
+   * with `retry: true`. Populated by the `state: "retry"` chat event so
+   * the streaming bubble can render a muted footer telling the user
+   * "retrying (1/2) — last attempt blocked by ...". Cleared on the next
+   * `state: "delta"` from a successful attempt or any terminal state.
+   */
+  chatRetryNotice: {
+    retryCount: number;
+    maxRetries: number;
+    reason: string;
+  } | null;
   lastError: string | null;
 };
 
 export type ChatEventPayload = {
   runId: string;
   sessionKey: string;
-  state: "delta" | "final" | "aborted" | "error";
+  state: "delta" | "final" | "aborted" | "error" | "retry";
   message?: unknown;
   errorMessage?: string;
+  retryCount?: number;
+  maxRetries?: number;
+  reason?: string;
 };
 
 function maybeResetToolStream(state: ChatState) {
@@ -337,6 +352,7 @@ export async function sendChatMessage(
   state.chatRunId = runId;
   state.chatStream = "";
   state.chatStreamStartedAt = now;
+  state.chatRetryNotice = null;
 
   try {
     await requestChatSend(state, { message: msg, attachments, runId });
@@ -446,6 +462,7 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
+    state.chatRetryNotice = null;
   } else if (payload.state === "aborted") {
     const normalizedMessage = normalizeAbortedAssistantMessage(payload.message);
     if (normalizedMessage && !isAssistantSilentReply(normalizedMessage)) {
@@ -466,11 +483,36 @@ export function handleChatEvent(state: ChatState, payload?: ChatEventPayload) {
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
+    state.chatRetryNotice = null;
   } else if (payload.state === "error") {
     state.chatStream = null;
     state.chatRunId = null;
     state.chatStreamStartedAt = null;
+    state.chatRetryNotice = null;
     state.lastError = payload.errorMessage ?? "chat error";
+  } else if (payload.state === "retry") {
+    // Server signaled that an llm_output hook is retrying. Clear the
+    // current stream buffer so the next attempt's deltas render in a
+    // fresh bubble instead of being appended to the prior attempt's
+    // partial text. Keep `chatRunId` so the run stays "live" and
+    // subsequent deltas continue routing to this same chat session.
+    state.chatStream = "";
+    state.chatStreamStartedAt = Date.now();
+    // Stash retry metadata so the chat view can render a muted footer
+    // ("Retrying 1/2 — last attempt blocked by …") under the streaming
+    // bubble. Without this surface the user sees a 5-10s gap of nothing
+    // happening between attempts and has no idea the system is retrying.
+    if (
+      typeof payload.retryCount === "number" &&
+      typeof payload.maxRetries === "number" &&
+      typeof payload.reason === "string"
+    ) {
+      state.chatRetryNotice = {
+        retryCount: payload.retryCount,
+        maxRetries: payload.maxRetries,
+        reason: payload.reason,
+      };
+    }
   }
   return payload.state;
 }

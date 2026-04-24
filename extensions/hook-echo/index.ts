@@ -9,8 +9,11 @@
  *     "HOOK_ASK_RUN"       → before_agent_run returns ask (human approval)
  *     "HOOK_BLOCK_OUTPUT"  → llm_output returns block with custom message
  *     "HOOK_BLOCK_RETRY"   → llm_output returns block with retry: true (test retry path)
- *     "HOOK_ASK_OUTPUT"    → llm_output returns ask (human approval)
- *     "HOOK_ASYNC_BLOCK"   → async llm_output intervenes with block
+ *
+ *   NOTE: The following are intentionally not exposed here today —
+ *   see docs/refactor/hook-output-gating-limitations.md:
+ *     - HOOK_ASK_OUTPUT  (llm_output ASK; cannot pause tool-using turns)
+ *     - HOOK_ASYNC_BLOCK (async llm_output intervene; no UI surface)
  *
  * Enable via config: plugins.entries.hook-echo.enabled = true
  */
@@ -25,7 +28,6 @@ const PLUGIN_ID = "hook-echo";
  *   HOOK_BLOCK_RUN          → before_agent_run BLOCK   (turn never starts)
  *   HOOK_ASK_RUN            → before_agent_run ASK     (turn pauses for approval pre-LLM)
  *   HOOK_BLOCK_OUTPUT       → llm_output BLOCK         (LLM text reply blocked; tools NOT in scope)
- *   HOOK_ASK_OUTPUT         → llm_output ASK           (LLM text reply paused for approval; tools NOT in scope)
  *   HOOK_BLOCK_RETRY        → llm_output BLOCK + retry (LLM blocked but runner re-asks the model)
  *   HOOK_BLOCK_TOOL_INPUT   → before_tool_call BLOCK   (tool blocked before execute(); turn ends)
  *   HOOK_ASK_TOOL_INPUT     → before_tool_call ASK     (tool paused for approval before execute())
@@ -144,20 +146,14 @@ export default definePluginEntry({
       return { outcome: "pass" as const };
     });
 
-    // ─── before_agent_run (async) ──────────────────────────────────────
-    api.on(
-      "before_agent_run",
-      async (event, _ctx, controller) => {
-        log.info(`[${PLUGIN_ID}] async before_agent_run started — simulating slow check`);
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        if (controller?.signal.aborted) {
-          log.info(`[${PLUGIN_ID}] async before_agent_run — aborted, skipping`);
-          return;
-        }
-        log.info(`[${PLUGIN_ID}] async before_agent_run — slow check complete, all clear`);
-      },
-      { mode: "async", timeoutMs: 5000 },
-    );
+    // NOTE: async-mode handlers (`mode: "async"`) were removed from this
+    // diagnostic plugin. The runner DOES fire async handlers and the
+    // `controller.intervene` callback DOES collect a decision, but that
+    // decision currently has no effect on the user-visible chat UI: the
+    // intervention is logged and dispatched but no SPA seam renders it
+    // as a follow-up retraction notice. Until that path is wired (see
+    // docs/refactor/hook-output-gating-limitations.md), the async
+    // examples here only added confusion to manual smoke tests.
 
     // ─── llm_output (sync) ────────────────────────────────────────────
     api.on("llm_output", async (event, ctx) => {
@@ -194,56 +190,16 @@ export default definePluginEntry({
         };
       }
 
-      if (hasTrigger(currentUserMsg, "HOOK_ASK_OUTPUT")) {
-        log.info(`[${PLUGIN_ID}] llm_output → ASKING (trigger: HOOK_ASK_OUTPUT)`);
-        return {
-          outcome: "ask" as const,
-          reason: "[hook-echo] Output requires approval — HOOK_ASK_OUTPUT trigger",
-          title: "Hook Echo: Output Review",
-          description:
-            "The hook-echo diagnostic plugin flagged this response for human review. Approve to deliver, deny to retract.",
-          severity: "info" as const,
-          timeoutMs: 60_000,
-          timeoutBehavior: "deny" as const,
-          denialMessage: "🔒 [hook-echo] Response withheld — approval was not granted.",
-        };
-      }
+      // NOTE: HOOK_ASK_OUTPUT was removed — see
+      // docs/refactor/hook-output-gating-limitations.md for why
+      // llm_output ASK is not enforceable today.
 
       return { outcome: "pass" as const };
     });
 
-    // ─── llm_output (async) ───────────────────────────────────────────
-    api.on(
-      "llm_output",
-      async (event, ctx, controller) => {
-        const currentUserMsg = extractCurrentUserMessage(event.prompt);
-
-        log.info(`[${PLUGIN_ID}] async llm_output started`);
-
-        // Simulate slow async analysis
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        if (controller?.signal.aborted) {
-          log.info(`[${PLUGIN_ID}] async llm_output — aborted`);
-          return;
-        }
-
-        if (hasTrigger(currentUserMsg, "HOOK_ASYNC_BLOCK")) {
-          log.info(
-            `[${PLUGIN_ID}] async llm_output → BLOCKING via intervene (trigger: HOOK_ASYNC_BLOCK)`,
-          );
-          controller?.intervene({
-            outcome: "block" as const,
-            reason: "[hook-echo] Output async-blocked by HOOK_ASYNC_BLOCK trigger",
-            message:
-              "🔒 [hook-echo] This response was async-blocked by the hook-echo diagnostic plugin.",
-          });
-          return;
-        }
-
-        log.info(`[${PLUGIN_ID}] async llm_output — check complete, no intervention`);
-      },
-      { mode: "async", timeoutMs: 10000 },
-    );
+    // NOTE: async llm_output handler removed alongside the async
+    // before_agent_run example above. See the limitations doc for the
+    // architectural reason and the pending follow-up work.
 
     // ─── before_tool_call (sync) ──────────────────────────────────────
     // Gates tool execution before the wrapped tool's `execute()` body

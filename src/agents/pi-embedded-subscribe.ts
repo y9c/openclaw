@@ -816,7 +816,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
      *
      * If no deferral is pending this is a harmless no-op.
      */
-    resolveTerminalLifecycle: (override?: { error: string }) => {
+    resolveTerminalLifecycle: (override?: { error: string; errorKind?: "hook_block" }) => {
       const deferred = state.deferredTerminalLifecycle;
 
       if (!deferred) {
@@ -824,7 +824,7 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
       }
       state.deferredTerminalLifecycle = undefined;
       if (override) {
-        deferred.emitError(override.error);
+        deferred.emitError(override.error, override.errorKind);
       } else {
         deferred.emit();
       }

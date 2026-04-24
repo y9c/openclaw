@@ -786,44 +786,13 @@ test.describe("Lifecycle hook outcomes (WebKit)", () => {
     expect(["final", "error"]).toContain(result.finalState);
   });
 
-  test("HOOK_ASK_OUTPUT — llm_output ask (approve)", async ({ page }) => {
-    await shoot(page, "ask_output_approve_pre");
-    const result = await runHookTrigger(
-      page,
-      "HOOK_ASK_OUTPUT please answer and ask for approval",
-      { timeoutMs: 120_000, approvalDecision: "allow-once" },
-    );
-    await shoot(page, "ask_output_approve_post");
-    recordResult("HOOK_ASK_OUTPUT_approve", result);
-    expect(result.approvalIds.length).toBeGreaterThanOrEqual(1);
-    expect(["final", "error"]).toContain(result.finalState);
-  });
-
-  test("HOOK_ASK_OUTPUT — llm_output ask (deny)", async ({ page }) => {
-    await shoot(page, "ask_output_deny_pre");
-    const result = await runHookTrigger(page, "HOOK_ASK_OUTPUT please answer then deny", {
-      timeoutMs: 120_000,
-      approvalDecision: "deny",
-    });
-    await shoot(page, "ask_output_deny_post");
-    recordResult("HOOK_ASK_OUTPUT_deny", result);
-    expect(result.approvalIds.length).toBeGreaterThanOrEqual(1);
-    expect(result.finalState).toBe("error");
-  });
-
-  // ─── Tool-gating regression ─────────────────────────────────────────
-  // Security guarantee: when an `llm_output` hook returns `ask`, the runner
-  // must NOT dispatch any tool calls that the LLM emitted in the same
-  // response until the human approves. If a tool fires before approval,
-  // the ask hook is useless for moderation/policy gating because side
-  // effects can leak before the human sees the proposed output.
+  // NOTE: The HOOK_ASK_OUTPUT (llm_output ask) tests were removed because
+  // llm_output ASK is not enforceable for tool-using turns and the post-
+  // prompt() ASK path was ripped from the runner. See
+  // docs/refactor/hook-output-gating-limitations.md for details and the
+  // path forward (extension-runner refactor).
   //
-  // Approach: ask the agent to reply with a short message AND run a bash
-  // command that writes a unique canary file to /tmp/. Use HOOK_ASK_OUTPUT
-  // so the run pauses on the LLM response. Hold the approval response
-  // open for several seconds and poll the canary file from Node — if it
-  // exists at any point before we send `deny`, the gating is broken.
-  // After deny, re-poll: the canary must still NOT exist.
+  // ─── Tool-gating regression ─────────────────────────────────────────
   test("HOOK_ASK_TOOL_INPUT — must pause tool dispatch for approval", async ({ page }) => {
     // Security guarantee: when a `before_tool_call` hook returns `ask`, the
     // runner must NOT dispatch the tool until the human approves. We assert
@@ -977,9 +946,11 @@ test.describe("Lifecycle hook outcomes (WebKit)", () => {
 
     // Only one user bubble (no duplicates from retry)
     expect(userBubbles.length).toBeLessThanOrEqual(1);
-    // At least one retry notice visible (retry happened)
-    expect(retryNotices.length).toBeGreaterThanOrEqual(1);
-    // Final block message visible
+    // Final block message visible. Retry notices are no longer persisted
+    // as separate bubbles — each retry attempt's streamed text appears in
+    // a new assistant bubble under the same runId, then gets scrubbed
+    // when the next attempt's block decision arrives. The final
+    // exhaustion message is the only retry-related bubble that persists.
     expect(finalBlocks.length).toBeGreaterThanOrEqual(1);
   });
 });

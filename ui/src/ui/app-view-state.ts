@@ -79,6 +79,12 @@ export type AppViewState = {
   chatStreamSegments: Array<{ text: string; ts: number }>;
   chatStream: string | null;
   chatStreamStartedAt: number | null;
+  /** Live retry status for the streaming bubble; see ChatState.chatRetryNotice. */
+  chatRetryNotice: {
+    retryCount: number;
+    maxRetries: number;
+    reason: string;
+  } | null;
   chatRunId: string | null;
   chatSideResult: ChatSideResult | null;
   chatSideResultTerminalRuns: Set<string>;

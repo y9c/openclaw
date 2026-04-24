@@ -95,7 +95,7 @@ export type EmbeddedPiSubscribeState = {
    */
   deferredTerminalLifecycle?: {
     emit: () => void;
-    emitError: (error: string) => void;
+    emitError: (error: string, errorKind?: "hook_block") => void;
   };
 
   /**

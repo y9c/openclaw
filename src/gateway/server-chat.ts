@@ -212,6 +212,17 @@ export type ChatRunState = {
    * Values are timestamps (ms) so the maintenance sweep can age entries out.
    */
   hookFinalizedRuns: Map<string, number>;
+  /**
+   * Tracks runs whose latest attempt was blocked by an llm_output hook
+   * with a retry decision. While the runId is in this set, the next
+   * `agent_end` lifecycle event MUST NOT be promoted to `state: "final"`
+   * by `emitChatFinal` — the SDK is about to spin a fresh attempt under
+   * the same runId, and emitting `final` would cause the SPA to
+   * permanently close the chat run (clearing chatRunId, refusing further
+   * deltas). Cleared by `clearPendingRetry()` when the next attempt
+   * starts (or by `agent_end` consuming it once).
+   */
+  pendingRetryRuns: Set<string>;
   clear: () => void;
 };
 
@@ -223,6 +234,7 @@ export function createChatRunState(): ChatRunState {
   const deltaLastBroadcastLen = new Map<string, number>();
   const abortedRuns = new Map<string, number>();
   const hookFinalizedRuns = new Map<string, number>();
+  const pendingRetryRuns = new Set<string>();
 
   const clear = () => {
     registry.clear();
@@ -232,6 +244,7 @@ export function createChatRunState(): ChatRunState {
     deltaLastBroadcastLen.clear();
     abortedRuns.clear();
     hookFinalizedRuns.clear();
+    pendingRetryRuns.clear();
   };
 
   return {
@@ -242,6 +255,7 @@ export function createChatRunState(): ChatRunState {
     deltaLastBroadcastLen,
     abortedRuns,
     hookFinalizedRuns,
+    pendingRetryRuns,
     clear,
   };
 }
@@ -608,6 +622,26 @@ export function createAgentEventHandler({
     const eventRunId = chatLink?.clientRunId ?? evt.runId;
     const isAborted =
       chatRunState.abortedRuns.has(clientRunId) || chatRunState.abortedRuns.has(evt.runId);
+
+    // Suppress the `state: "final"` broadcast when an llm_output retry
+    // is queued. The SDK fires `agent_end` after every `session.prompt()`
+    // call, including the one that just got blocked-and-retried. Without
+    // this guard, the SPA would receive `state: "final"`, clear
+    // `chatRunId`, and ignore deltas from the next attempt — producing
+    // the "no bubble at all between attempts" symptom.
+    const isPendingRetry =
+      chatRunState.pendingRetryRuns.has(evt.runId) ||
+      chatRunState.pendingRetryRuns.has(chatLink?.clientRunId ?? "");
+    if (isPendingRetry && lifecyclePhase === "end") {
+      chatRunState.pendingRetryRuns.delete(evt.runId);
+      if (chatLink?.clientRunId) {
+        chatRunState.pendingRetryRuns.delete(chatLink.clientRunId);
+      }
+      // Consume the agent_end without emitting a chat lifecycle. The
+      // chatLink registry entry stays alive so deltas from the next
+      // attempt continue to route to the same clientRunId.
+      return;
+    }
 
     if (isControlUiVisible && sessionKey) {
       if (!isAborted) {
@@ -1039,6 +1073,38 @@ export function createAgentEventHandler({
       }
       if (!isAborted && evt.stream === "assistant" && typeof evt.data?.text === "string") {
         emitChatDelta(sessionKey, clientRunId, evt.runId, evt.seq, evt.data.text, evt.data.delta);
+      }
+      // Retry signal from the llm_output hook in attempt.ts: clear server
+      // and SPA chat buffers so the next attempt's deltas render in a
+      // fresh bubble instead of getting concatenated to the prior
+      // attempt's text.
+      if (!isAborted && evt.stream === "chat_retry") {
+        clearBufferedChatState(clientRunId);
+        // Mark this runId as expecting a retry. The next `agent_end`
+        // lifecycle event will be suppressed (see emitChatFinal callsite
+        // in the lifecycle handler) so the SPA does not see `state:
+        // "final"` and tear down the chat run before the retry attempt
+        // streams.
+        chatRunState.pendingRetryRuns.add(clientRunId);
+        if (evt.runId !== clientRunId) {
+          chatRunState.pendingRetryRuns.add(evt.runId);
+        }
+        const retryPayload = {
+          runId: clientRunId,
+          sessionKey,
+          seq: evt.seq,
+          state: "retry" as const,
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "" }],
+            timestamp: Date.now(),
+          },
+          retryCount: typeof evt.data?.retryCount === "number" ? evt.data.retryCount : undefined,
+          maxRetries: typeof evt.data?.maxRetries === "number" ? evt.data.maxRetries : undefined,
+          reason: typeof evt.data?.reason === "string" ? evt.data.reason : undefined,
+        };
+        broadcast("chat", retryPayload);
+        nodeSendToSession(sessionKey, "chat", retryPayload);
       }
     }
 

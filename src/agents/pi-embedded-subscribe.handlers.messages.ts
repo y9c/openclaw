@@ -571,8 +571,9 @@ export async function handleMessageEnd(
   // Inline `llm_output` hook fire: when this is the first assistant message
   // in this turn that contains user-facing text, fire the hook BEFORE
   // emitting to the UI so block decisions can replace the text in-place and
-  // abort the upstream prompt() call. See plan for `HOOK_BLOCK_OUTPUT` /
-  // `HOOK_ASK_OUTPUT` semantics.
+  // abort the upstream prompt() call. Only `outcome: "block"` (with optional
+  // `retry: true`) is enforceable here. ASK is no-op'd at the runner level —
+  // see docs/refactor/hook-output-gating-limitations.md.
   const hasInlineUserVisibleText = Boolean(cleanedText.trim());
   const inlineCtxParams = ctx.params.inlineLlmOutputContext;
   if (
@@ -606,8 +607,8 @@ export async function handleMessageEnd(
         },
       );
       // Inline path handles ONLY terminal block decisions (block + !retry).
-      // - ASK continues to use the legacy post-prompt() attempt-level
-      //   orchestration so approval UI stays in one place.
+      // - ASK is no longer enforceable; the runner logs and ignores it.
+      //   See docs/refactor/hook-output-gating-limitations.md.
       // - BLOCK + retry stays on the legacy path so the runner can re-ask
       //   the model instead of aborting the turn.
       const isTerminalBlock =

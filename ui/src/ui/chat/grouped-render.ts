@@ -89,7 +89,46 @@ function extractImages(message: unknown): ImageBlock[] {
   return images;
 }
 
-export function renderReadingIndicatorGroup(assistant?: AssistantIdentity, basePath?: string) {
+export type RetryNotice = {
+  retryCount: number;
+  maxRetries: number;
+  reason: string;
+};
+
+/**
+ * Muted footer shown under the streaming bubble while an llm_output hook
+ * is retrying. Without this surface the user sees a multi-second gap of
+ * nothing happening between attempts and has no idea the system is
+ * retrying. Mirrors the style of other muted attribution rows used
+ * throughout the chat view.
+ */
+function renderRetryNoticeFooter(notice: RetryNotice | null | undefined) {
+  if (!notice) {
+    return nothing;
+  }
+  return html`
+    <div
+      class="chat-retry-notice"
+      role="status"
+      aria-live="polite"
+      title=${notice.reason}
+      style="
+        margin-top: 4px;
+        font-size: 0.75rem;
+        opacity: 0.6;
+        font-style: italic;
+      "
+    >
+      🔁 Retrying ${notice.retryCount}/${notice.maxRetries} — last attempt blocked: ${notice.reason}
+    </div>
+  `;
+}
+
+export function renderReadingIndicatorGroup(
+  assistant?: AssistantIdentity,
+  basePath?: string,
+  retryNotice?: RetryNotice | null,
+) {
   return html`
     <div class="chat-group assistant">
       ${renderAvatar("assistant", assistant, basePath)}
@@ -99,6 +138,7 @@ export function renderReadingIndicatorGroup(assistant?: AssistantIdentity, baseP
             <span></span><span></span><span></span>
           </span>
         </div>
+        ${renderRetryNoticeFooter(retryNotice)}
       </div>
     </div>
   `;
@@ -110,6 +150,7 @@ export function renderStreamingGroup(
   onOpenSidebar?: (content: SidebarContent) => void,
   assistant?: AssistantIdentity,
   basePath?: string,
+  retryNotice?: RetryNotice | null,
 ) {
   const timestamp = new Date(startedAt).toLocaleTimeString([], {
     hour: "numeric",
@@ -131,6 +172,7 @@ export function renderStreamingGroup(
           { isStreaming: true, showReasoning: false },
           onOpenSidebar,
         )}
+        ${renderRetryNoticeFooter(retryNotice)}
         <div class="chat-group-footer">
           <span class="chat-sender-name">${name}</span>
           <span class="chat-group-timestamp">${timestamp}</span>

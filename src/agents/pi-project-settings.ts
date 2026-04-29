@@ -51,16 +51,12 @@ export function createPreparedEmbeddedPiSettingsManager(params: {
     contextTokenBudget: params.contextTokenBudget,
   });
   // Disable SDK auto-retry via in-memory override so we don't persist the
-  // setting to disk (#73781). Using inMemory wrapper keeps the change scoped
-  // to this run only.
-  const baseSettings = settingsManager.getGlobalSettings();
-  const patched = {
-    ...baseSettings,
-    retry: { ...baseSettings.retry, enabled: false },
+  // setting to disk (#73781). Build a flat snapshot (same pattern as the
+  // non-trusted path above) and patch retry.enabled=false before wrapping.
+  const flat = {
+    ...settingsManager.getGlobalSettings(),
+    ...settingsManager.getProjectSettings(),
   };
-  return SettingsManager.inMemory({
-    globalSettings: patched,
-    pluginSettings: settingsManager.getPluginSettings?.() ?? {},
-    projectSettings: settingsManager.getProjectSettings(),
-  });
+  flat.retry = { ...flat.retry, enabled: false };
+  return SettingsManager.inMemory(flat);
 }
